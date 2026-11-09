@@ -114,7 +114,7 @@ function runRead(img, tpl, opts) {
     const fallback = () => {
       try {
         const res = OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
-        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); delete f.H; });
+        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; try { const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); } catch (previewError) { console.warn('Önizleme üretilemedi; okunan cevaplar korunuyor.', previewError); } finally { delete f.H; } });
         resolve({ res, previews });
       } catch (e) { resolve({ error: e.message }); }
     };
@@ -122,7 +122,7 @@ function runRead(img, tpl, opts) {
     try {
       if (!SC.worker) SC.worker = new Worker('worker.js');
       const id = ++SC.seq, w = SC.worker;
-      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); resolve(e.data); };
+      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); if (e.data.error) { SC.worker = null; fallback(); } else resolve(e.data); };
       const onErr = () => { w.removeEventListener('message', on); w.removeEventListener('error', onErr); SC.worker = null; fallback(); };
       w.addEventListener('message', on); w.addEventListener('error', onErr);
       const copy = img.gray.slice();                       // orijinali (elle köşe vb. için) bozmamak için kopya aktarılır
@@ -388,12 +388,8 @@ App.views.scan = function (root) {
 
     function draw() {
       const r = cur(); if (!r || !r.pv || !img.complete) return;
-      canvas.width = r.pv.w; canvas.height = r.pv.h; const cx = canvas.getContext('2d'); cx.drawImage(img, 0, 0); const s = r.pv.s;
-      // Renk halkası basılı optik baloncuğun dışına taşmasın:
-      // tpl.r baloncuk yarıçapıdır; içte güvenli pay bırakılır.
-      const rad = tpl.r * s * 0.70;
-      const ringWidth = Math.max(1.5, rad * 0.13);
-      cx.lineWidth = ringWidth;
+      canvas.width = r.pv.w; canvas.height = r.pv.h; const cx = canvas.getContext('2d'); cx.drawImage(img, 0, 0); const s = r.pv.s, rad = tpl.r * s * 0.70;
+      cx.lineWidth = Math.max(1.25, rad * 0.13);
       for (let q = 1; q <= cfg.total; q++) {
         const p = qpos[q]; if (!p) continue; const a = r.answers[q - 1], fl = r.flags.find(f => f.q === q), ed = r.edits[q];
         if (q === activeQ) { cx.fillStyle = 'rgba(255,214,0,.28)'; cx.fillRect((p.xs[0] - tpl.r * 2.2) * s, (p.y - tpl.r * 1.5) * s, (p.xs[p.xs.length - 1] - p.xs[0] + tpl.r * 4.4) * s, tpl.r * 3 * s); }
