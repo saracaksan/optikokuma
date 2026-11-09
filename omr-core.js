@@ -1,4 +1,4 @@
-/*  omr-core.js — bağımlılıksız optik okuma motoru + form üretici
+/*  omr-core.js — AKSAN OMR gelişmiş optik okuma motoru + form üretici
  *  Tarayıcıda (window.OMR) ve Node'da (require) çalışır.
  *
  *  Kavramlar
@@ -26,6 +26,7 @@
   const AREA = { x: 15, y: 16, w: 180, h: 265 };
   const LETTERS = 'ABCDEFGH';
   const CODE_CELLS = 33;   // 1 başlangıç + 24 bit kimlik + 8 bit sağlama
+  const VERSION = '2.1.0-aksan-omr';
 
   function pageForms(nup) {
     if (nup === 1) return [{ x: 0, y: 0, w: PAGE.w, h: PAGE.h }];
@@ -543,52 +544,104 @@
   /* ------------------------------------------------------------------ */
   /*  Baloncuk okuma                                                     */
   /* ------------------------------------------------------------------ */
-  const INNER = (() => { const o = [[0, 0]]; for (const [rf, n] of [[0.35, 6], [0.75, 12]]) for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + 0.3; o.push([Math.cos(a) * rf, Math.sin(a) * rf]); } return o; })();
-  const RING = (() => { const o = []; for (const [rf, n] of [[1.55, 10], [1.85, 10]]) for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + 0.15; o.push([Math.cos(a) * rf, Math.sin(a) * rf]); } return o; })();
+  // Baloncuk içini daha sık örnekle: merkez + 6 halka üzerinde 48 nokta.
+  // Noktalar merkezî mürekkebi ölçer; dış kontur ve baloncuk çizgisi ölçüme katılmaz.
+  const INNER = (() => {
+    const o = [[0, 0]];
+    for (const [rf, n, phase] of [[0.22, 8, 0], [0.43, 12, 0.13], [0.64, 14, 0.07], [0.82, 16, 0.19]]) {
+      for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + phase; o.push([Math.cos(a) * rf, Math.sin(a) * rf]); }
+    }
+    return o;
+  })();
+  // Balon dışındaki kâğıt rengini yerel olarak ölçmek için iki halka.
+  const RING = (() => {
+    const o = [];
+    for (const [rf, n, phase] of [[1.42, 16, 0.08], [1.78, 20, 0.21]]) {
+      for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2 + phase; o.push([Math.cos(a) * rf, Math.sin(a) * rf]); }
+    }
+    return o;
+  })();
 
-  function bubbleDark(g, w, h, H, cx, cy, r) {
-    let si = 0; const inner = r * 0.62;
-    for (const [ox, oy] of INNER) { const p = applyH(H, cx + ox * inner, cy + oy * inner); si += bil(g, w, h, p[0], p[1]); }
-    const mi = si / INNER.length, ring = [];
-    for (const [ox, oy] of RING) { const p = applyH(H, cx + ox * r, cy + oy * r); ring.push(bil(g, w, h, p[0], p[1])); }
-    ring.sort((a, b) => a - b); const paper = Math.max(ring[Math.floor(ring.length * 0.7)], 40);
-    return Math.min(1, Math.max(0, (paper - mi) / paper));
+  function trimmedMean(values, trim) {
+    const a = values.slice().sort((x, y) => x - y);
+    const cut = Math.min(Math.floor(a.length * (trim || 0)), Math.floor((a.length - 1) / 2));
+    let sum = 0, n = 0;
+    for (let i = cut; i < a.length - cut; i++) { sum += a[i]; n++; }
+    return n ? sum / n : (a[0] || 0);
   }
 
-  function decideLine(sc, T) {
+  /** Baloncuk analizi: yerel kâğıt referansı + yoğun örneklemeli iç alan analizi. */
+  function bubbleMeasure(g, w, h, H, cx, cy, r) {
+    const inner = [], ring = [];
+    for (const [ox, oy] of INNER) {
+      const p = applyH(H, cx + ox * r * 0.88, cy + oy * r * 0.88);
+      inner.push(bil(g, w, h, p[0], p[1]));
+    }
+    for (const [ox, oy] of RING) {
+      const p = applyH(H, cx + ox * r, cy + oy * r);
+      ring.push(bil(g, w, h, p[0], p[1]));
+    }
+    const paper = Math.max(40, trimmedMean(ring, 0.12));
+    const ink = trimmedMean(inner, 0.10);
+    const contrast = Math.max(0, paper - ink);
+    const score = Math.min(1, Math.max(0, contrast / Math.max(40, paper)));
+    // Kenar çizgisi / komşu baskı / gölge etkisini anlamak için örnek dağılımı.
+    const sorted = inner.slice().sort((a, b) => a - b);
+    const spread = sorted[Math.floor(sorted.length * 0.9)] - sorted[Math.floor(sorted.length * 0.1)];
+    return { score, paper, ink, contrast, spread };
+  }
+
+  function bubbleDark(g, w, h, H, cx, cy, r) {
+    return bubbleMeasure(g, w, h, H, cx, cy, r).score;
+  }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function decideLine(sc, T, opts) {
+    opts = opts || {};
+    if (!sc || !sc.length) return { idx: -1, flag: 'weak', confidence: 0, margin: 0 };
     let i1 = 0; for (let i = 1; i < sc.length; i++) if (sc[i] > sc[i1]) i1 = i;
     const s1 = sc[i1]; let s2 = 0, i2 = -1;
     for (let i = 0; i < sc.length; i++) if (i !== i1 && sc[i] > s2) { s2 = sc[i]; i2 = i; }
-    if (s1 < T) return { idx: -1, flag: s1 > T - 0.07 ? 'weak' : '' };
-    if (s2 >= T && s2 >= 0.72 * s1) return { idx: -2, flag: 'multi' };
+    const margin = s1 - s2;
+    const confidence = clamp((s1 - T) / Math.max(0.08, 1 - T), 0, 1) * clamp(margin / Math.max(0.12, s1), 0, 1);
+    if (s1 < T) return { idx: -1, flag: s1 > T - 0.085 ? 'weak' : '', confidence, margin };
+    // İki baloncuk benzer yoğunluktaysa çoklu işaret; yakın ikinci iz silgi/karalama kontrolüne gider.
+    if (s2 >= T && s2 >= 0.70 * s1) return { idx: -2, flag: 'multi', confidence: 0, margin };
     let flag = '';
-    if (s2 >= T * 0.8 && s2 >= 0.45 * s1) flag = 'erase';
-    else if (s1 < T + 0.08) flag = 'weak';
-    return { idx: i1, flag };
+    if (s2 >= T * 0.78 && s2 >= 0.42 * s1) flag = 'erase';
+    else if (s1 < T + 0.10 || margin < 0.12) flag = 'weak';
+    return { idx: i1, flag, confidence, margin };
   }
 
   function readFrame(g, w, h, H, tpl) {
     const all = [];
     const raw = tpl.groups.map(gr => {
       const lines = [];
-      if (gr.axis === 'row') for (let ri = 0; ri < gr.ys.length; ri++) lines.push(gr.xs.map(x => bubbleDark(g, w, h, H, x, gr.ys[ri], tpl.r)));
-      else for (let ci = 0; ci < gr.xs.length; ci++) lines.push(gr.ys.map(y => bubbleDark(g, w, h, H, gr.xs[ci], y, tpl.r)));
-      for (const l of lines) for (const v of l) all.push(v);
+      if (gr.axis === 'row') for (let ri = 0; ri < gr.ys.length; ri++) lines.push(gr.xs.map(x => bubbleMeasure(g, w, h, H, x, gr.ys[ri], tpl.r)));
+      else for (let ci = 0; ci < gr.xs.length; ci++) lines.push(gr.ys.map(y => bubbleMeasure(g, w, h, H, gr.xs[ci], y, tpl.r)));
+      for (const l of lines) for (const v of l) all.push(v.score);
       return lines;
     });
-    const baseline = percentile(all, 0.5), T = Math.min(0.55, Math.max(0.28, baseline + 0.2));
-    const res = { studentNo: '', schoolCode: '', booklet: '', fields: {}, flags: [], groups: [], threshold: T, baseline };
+    const baseline = all.length ? percentile(all, 0.5) : 0;
+    // Önceki motorun eşik aralığı korunur; yalnızca yerel kâğıt referanslı skorlarla beslenir.
+    const T = clamp(baseline + 0.20, 0.27, 0.55);
+    const res = { studentNo: '', schoolCode: '', booklet: '', fields: {}, flags: [], groups: [], threshold: T, baseline, readerVersion: VERSION };
     const ans = {};
     tpl.groups.forEach((gr, gi) => {
-      const lines = raw[gi].map((sc, li) => {
-        const dcd = decideLine(sc, T);
+      const lines = raw[gi].map((measures, li) => {
+        const sc = measures.map(m => m.score), dcd = decideLine(sc, T);
         const v = dcd.idx >= 0 ? gr.labels[dcd.idx] : (dcd.idx === -2 ? '*' : '-');
-        return { v, d: sc, flag: dcd.flag };
+        return {
+          v, d: sc, flag: dcd.flag, confidence: dcd.confidence, margin: dcd.margin,
+          // Ölçüm bilgisi inceleme ekranında kullanılabilir; eski tüketiciler bu alanları yok sayabilir.
+          quality: measures.map(m => ({ contrast: +m.contrast.toFixed(3), paper: +m.paper.toFixed(2), spread: +m.spread.toFixed(2) }))
+        };
       });
       res.groups.push({ id: gr.id, role: gr.role, axis: gr.axis, lines });
       if (gr.role === 'questions') lines.forEach((l, i) => {
         const q = gr.qStart + i; ans[q] = l.v;
-        if (l.flag === 'multi' || l.flag === 'erase' || l.flag === 'weak') res.flags.push({ q, type: l.flag });
+        if (l.flag === 'multi' || l.flag === 'erase' || l.flag === 'weak') res.flags.push({ q, type: l.flag, confidence: l.confidence });
       });
       else if (gr.role === 'studentNo') {
         res.studentNo = lines.map((l, i) => { if (l.v === '-' || l.v === '*') { res.flags.push({ field: 'studentNo', col: i, type: l.v === '*' ? 'multi' : 'blank' }); return '?'; } return l.v; }).join('');
@@ -821,8 +874,8 @@
   }
 
   return {
-    PAGE, PAGE_MARK, ORIENT_BAR, LETTERS, pageForms, buildTemplate, renderPageSVG, formInnerSVG,
+    VERSION, PAGE, PAGE_MARK, ORIENT_BAR, LETTERS, pageForms, buildTemplate, renderPageSVG, formInnerSVG,
     NUPS, CODE_CELLS, LOCAL_BAR, detectFormCode, codeGeometry, formCodeOf, codeHex, readFormCode, cutLinesSVG, modeInfo, probe, readSingle,
-    rgbaToGray, boxDown, rotateGray, adaptiveBinary, findBlobs, homography, applyH, readPage, readFrame, rectify, decideLine, refineMark, toCustom, pxPerUnit
+    rgbaToGray, boxDown, rotateGray, adaptiveBinary, findBlobs, homography, applyH, readPage, readFrame, rectify, decideLine, refineMark, bubbleMeasure, bubbleDark, toCustom, pxPerUnit
   };
 });
