@@ -679,6 +679,18 @@
   /*  Sayfa okuma (köşe bulma, yön, sığdırma)                            */
   /* ------------------------------------------------------------------ */
   function pxPerUnit(H, ux, uy, span) { const a = applyH(H, ux, uy), b = applyH(H, ux + span, uy); return dist(a, b) / span; }
+  // Perspektifli görüntülerde yalnızca üst kenara bakma: dört kenarın yerel
+  // ölçeklerini birlikte kullan. Böylece köşe araması küçük baloncuklarda da
+  // görüntünün gerçek ölçeğine daha iyi uyum sağlar.
+  function estimatePxScale(H, A) {
+    const edges = [[0,1],[1,2],[2,3],[3,0]], vals = [];
+    for (const [i,j] of edges) {
+      const du = Math.hypot(A[j][0]-A[i][0], A[j][1]-A[i][1]);
+      if (du > 0) vals.push(dist(applyH(H,A[i][0],A[i][1]), applyH(H,A[j][0],A[j][1])) / du);
+    }
+    vals.sort((a,b)=>a-b);
+    return vals.length ? (vals.length % 2 ? vals[(vals.length-1)/2] : (vals[vals.length/2-1]+vals[vals.length/2])/2) : 1;
+  }
 
   function readPageCore(img, tpl, opts) {
     opts = opts || {};
@@ -723,18 +735,21 @@
     if (!Hp) { out.error = 'Köşe noktalarından dönüşüm hesaplanamadı.'; return out; }
 
     const forms = (tpl.kind === 'generated') ? pageForms(nup) : [{ x: 0, y: 0, w: tpl.frame.w, h: tpl.frame.h }];
-    const scale = pxPerUnit(Hp, pageAnchors[0][0], pageAnchors[0][1], 10);
+    const scale = estimatePxScale(Hp, pageAnchors);
     forms.forEach((F, idx) => {
       let Hf = null, refined = 0, offs = [];
-      if (tpl.kind === 'generated' && nup > 1) {
+      if (tpl.kind === 'generated') {
+        // Her form için kendi dört basılı referans karesini tekrar bul.
+        // Tekli formda da (nup=1) bu adım uygulanır; çoklu sayfada her
+        // küçük formun köşeleri ayrı ayrı düzeltilir.
         const px = tpl.anchors.map(a => {
-          const e = applyH(Hp, F.x + a[0], F.y + a[1]);
-          const r = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize);
-          if (r) { refined++; offs.push(Math.hypot(r.x - e[0], r.y - e[1]) / scale); return [r.x, r.y]; } return e;
+          const ux = F.x + a[0], uy = F.y + a[1], e = applyH(Hp, ux, uy);
+          const rr = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize, 5.5);
+          if (rr) { refined++; offs.push(Math.hypot(rr.x - e[0], rr.y - e[1]) / Math.max(scale, 0.001)); return [rr.x, rr.y]; }
+          return e;
         });
-        Hf = homography(tpl.anchors, px);
-      } else if (tpl.kind === 'generated') Hf = Hp;
-      else Hf = Hp;
+        Hf = homography(tpl.anchors, px) || Hp;
+      } else Hf = Hp;
       if (!Hf) { out.forms.push({ index: idx, ok: false, error: 'Dönüşüm hesaplanamadı' }); return; }
       const r = readFrame(g, w, h, Hf, tpl);
       r.index = idx; r.ok = true; r.H = Hf; r.refinedMarks = refined; r.markShiftMm = offs.length ? Math.max(...offs) : 0;
@@ -773,7 +788,7 @@
     }
     out.corners = ordered;
     const Hp = homography(A, ordered); if (!Hp) { out.error = 'Köşe noktalarından dönüşüm hesaplanamadı.'; return out; }
-    const scale = pxPerUnit(Hp, A[0][0], A[0][1], 10); let refined = 0;
+    const scale = estimatePxScale(Hp, A); let refined = 0;
     const px = A.map(a => { const e = applyH(Hp, a[0], a[1]), r = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize); if (r) { refined++; return [r.x, r.y]; } return e; });
     const Hf = homography(A, px); if (!Hf) { out.error = 'Dönüşüm hesaplanamadı.'; return out; }
     const r = readFrame(g, w, h, Hf, tpl); r.index = 0; r.ok = true; r.H = Hf; r.refinedMarks = refined; r.markShiftMm = 0;
