@@ -44,7 +44,7 @@ App.views.exams = function (root) {
     return opts;
   }
 
-  function editExam(ex) {
+  function editExam(ex, init) {
     const isNew = !ex, c0 = ex ? Object.assign({}, ex.config) : { sections: [{ name: 'Genel', count: 40, coef: 1 }], choices: 5, penalty: 0.25, method: 'net', base: 100, max: 500, keys: { A: '' }, booklets: ['A'], showKeys: true };
     const cfg0 = Scoring.normalizeCfg(c0);
     let sections = cfg0.sections.map(s => Object.assign({}, s));
@@ -54,9 +54,16 @@ App.views.exams = function (root) {
     if (ex) { const i = scopes.findIndex(o => o[0] === ex.scopeType && o[1] === String(ex.scopeValue)); if (i >= 0) scopeSel.value = i; }
     else if (u.role === 'okul' && scopes.length) scopeSel.value = 0;
     if (u.role === 'okul') scopeSel.disabled = true;
-    const preset = h('select', { onchange: () => { const p = Scoring.PRESETS[preset.value]; if (!p) return; sections = p.sections.map(s => Object.assign({}, s)); choices.value = p.choices; pen.value = String(p.penalty); methodSel.value = p.method; drawSections(); drawKeys(); drawMethod(); } },
-      h('option', { value: '' }, 'Hazır ayar seç…'), Object.entries(Scoring.PRESETS).map(([k, p]) => h('option', { value: k }, p.label)));
-    const choices = h('select', null, [3, 4, 5, 6].map(n => h('option', { value: n }, n + ' şık'))); choices.value = cfg0.choices;
+    const preset = h('select', { onchange: () => { const e = Katalog.byId(preset.value); if (e) applyEntry(e, true); } },
+      h('option', { value: '' }, 'Hazır sınav programı seç…'), Katalog.GROUPS.filter(g => g.id !== 'tek').map(g => h('optgroup', { label: g.label }, Katalog.ENTRIES.filter(e => e.group === g.id).map(e => h('option', { value: e.id }, e.name)))));
+    function applyEntry(e, setForm) {
+      const c = Katalog.examConfig(e); sections = c.sections.map(x => Object.assign({}, x)); choices.value = c.choices;
+      { const m = PENALTIES.find(p => Math.abs(parseFloat(p[0]) - c.penalty) < 1e-6); if (m) pen.value = m[0]; }
+      methodSel.value = c.method; base.value = c.base; max.value = c.max; booklets = c.booklets.slice(); bkIn.value = booklets.join(',');
+      if (setForm) { tplSel.value = 'std:' + e.id; stdNup.value = (init && init.nup) || 1; drawStd(); }
+      drawSections(); drawKeys(); drawMethod();
+    }
+    const choices = h('select', null, [2, 3, 4, 5, 6].map(n => h('option', { value: n }, n + ' şık'))); choices.value = cfg0.choices;
     const pen = h('select', null, PENALTIES.map(([v, l]) => h('option', { value: v }, l)));
     { const cur = cfg0.penalty, m = PENALTIES.find(p => Math.abs(parseFloat(p[0]) - cur) < 1e-6); if (m) pen.value = m[0]; else { pen.append(h('option', { value: String(cur) }, `Özel (${cur})`)); pen.value = String(cur); } }
     const methodSel = h('select', { onchange: drawMethod }, h('option', { value: 'net' }, 'Ağırlıklı net → 100 üzerinden puan'), h('option', { value: 'std500' }, 'Standart puan → 100–500 (LGS/YKS tarzı)'), h('option', { value: 'stdw' }, 'Ortalama standart puan (a + b·ort.)')); methodSel.value = cfg0.method;
@@ -84,27 +91,50 @@ App.views.exams = function (root) {
         keyBox.append(h('div', { class: 'field', style: { marginTop: '.6rem' } }, h('label', null, `Kitapçık ${b} cevap anahtarı `, info), ta));
       });
     }
-    const tplSel = h('select', null, h('option', { value: '' }, 'Otomatik (1/sayfa, 8 haneli öğrenci no)'), S.templates.map(t => h('option', { value: t.templateId }, t.name + (t.json && t.json.kind === 'custom' ? ' (harici form)' : ''))));
-    tplSel.value = (ex && ex.config.templateId) || '';
+    const curId = (ex && ex.config.templateId) || '', curStd = Katalog.parseStd(curId);
+    const stdEntries = Katalog.ENTRIES.slice(); if (curStd && !stdEntries.find(e => e.id === curStd.entry.id)) stdEntries.push(curStd.entry);
+    const tplSel = h('select', { onchange: () => drawStd() }, h('option', { value: '' }, 'Otomatik (1/sayfa, 8 haneli öğrenci no)'),
+      S.templates.length ? h('optgroup', { label: 'Kayıtlı şablonlarım' }, S.templates.map(t => h('option', { value: t.templateId }, t.name + (t.json && t.json.kind === 'custom' ? ' (harici form)' : '')))) : null,
+      Katalog.GROUPS.map(g => h('optgroup', { label: 'Hazır form · ' + g.label }, stdEntries.filter(e => e.group === g.id).map(e => h('option', { value: 'std:' + e.id }, e.name)))));
+    const stdNup = h('select', { onchange: () => drawStd() }, [1, 2, 4, 6, 8].map(n => h('option', { value: n }, NUP_LABELS[n]))), stdD = h('select', null, [0, 4, 5, 6, 7, 8, 9, 10, 12].map(n => h('option', { value: n }, n ? `${n} haneli öğrenci no` : 'Öğrenci no yok'))), stdSd = h('select', null, [0, 3, 4, 5, 6, 7, 8, 9, 10].map(n => h('option', { value: n }, n ? `${n} haneli kurum kodu` : 'Kurum kodu yok'))), stdBox = h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sayfaya sığdırma'), stdNup), h('div', { class: 'field' }, h('label', null, 'Öğrenci no'), stdD), h('div', { class: 'field' }, h('label', null, 'Kurum kodu'), stdSd)), stdInfo = h('div', { class: 'small muted' });
+    stdD.value = 8; stdSd.value = 0;
+    if (curStd) { tplSel.value = 'std:' + curStd.entry.id; stdNup.value = curStd.nup; stdD.value = curStd.d; stdSd.value = curStd.sd; } else tplSel.value = curId;
+    function drawStd() {
+      const on = tplSel.value.startsWith('std:'); stdBox.style.display = on ? '' : 'none'; clear(stdInfo);
+      if (on) { const e = Katalog.byId(tplSel.value.slice(4)); if (e) { const r = tryBuild(Katalog.formOpts(e, { nup: +stdNup.value, digits: +stdD.value, schoolDigits: +stdSd.value })); stdInfo.append(r.error ? h('span', { style: { color: 'var(--bad)' } }, r.error) : `Form: ${Katalog.total(e)} soru · ders ders sütunlar, numaralar her derste 1’den başlar · form kimliği ${r.tpl.formCodeHex}`); } }
+    }
+    stdD.addEventListener('change', drawStd); stdSd.addEventListener('change', drawStd);
     const status = h('select', null, h('option', { value: 'open' }, 'Okutmaya açık'), h('option', { value: 'draft' }, 'Taslak (okutulamaz)'), h('option', { value: 'closed' }, 'Kapalı')); status.value = ex ? ex.status : 'open';
     const showKeys = h('input', { type: 'checkbox', checked: c0.showKeys !== false });
     const err = h('div');
-    drawSections(); drawMethod(); drawKeys();
+    drawSections(); drawMethod(); drawKeys(); drawStd();
+    if (init && init.entryId) { const e = Katalog.byId(init.entryId); if (e) { preset.value = e.group !== 'tek' ? e.id : ''; applyEntry(e, true); if (init.nup) stdNup.value = init.nup; if (init.d != null) stdD.value = init.d; stdSd.value = init.sd || 0; drawStd(); } }
     const body = h('div', null,
       h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sınav adı'), name), h('div', { class: 'field' }, h('label', null, 'Tarih'), date), h('div', { class: 'field' }, h('label', null, 'Kapsam (hangi okullar katılır)'), scopeSel)),
       h('p', { class: 'small muted' }, 'Aynı sınavı birden çok okul okutur; sonuçlar tek havuzda toplanır ve okullar/ilçeler birbiriyle karşılaştırılır.'),
       h('h3', { style: { marginTop: '1rem' } }, 'Puanlama'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Hazır ayar'), preset), h('div', { class: 'field' }, h('label', null, 'Şık sayısı'), choices), h('div', { class: 'field' }, h('label', null, 'Net kuralı'), pen), h('div', { class: 'field' }, h('label', null, 'Puan yöntemi'), methodSel)), methodBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Ders / bölümler ve katsayılar'), secBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Kitapçıklar ve cevap anahtarı'), h('div', { class: 'field', style: { maxWidth: '260px' } }, h('label', null, 'Kitapçık türleri (virgülle)'), bkIn), keyBox,
-      h('h3', { style: { marginTop: '1rem' } }, 'Optik form'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Okuma şablonu'), tplSel), h('div', { class: 'field' }, h('label', null, 'Durum'), status)),
-      h('p', { class: 'small muted' }, '"Otomatik" şablonla basılacak form Formlar sayfasında "Sınavdan doldur" ile üretilir. Farklı bir form (ör. 8’li sığdırma ya da piyasadaki bir optik) kullanacaksanız şablonu Formlar sayfasında oluşturup buradan seçin.'),
+      h('h3', { style: { marginTop: '1rem' } }, 'Optik form'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Optik form (okuma şablonu)'), tplSel), h('div', { class: 'field' }, h('label', null, 'Durum'), status)), stdBox, stdInfo,
+      h('p', { class: 'small muted' }, 'Hazır formu Formlar → Hazır şablonlar sayfasından yazdırın; okutma aynı formu otomatik tanır. Kendi formunuzu Formlar → Tasarla bölümünde oluşturup kaydederseniz burada "Kayıtlı şablonlarım" altında seçersiniz.'),
       h('label', { class: 'row', style: { marginTop: '.4rem' } }, showKeys, 'Okul kullanıcıları cevap anahtarını görebilsin (okutma sırasında D/Y/B gösterilir)'), err);
     const dlg = modal(isNew ? 'Yeni sınav' : 'Sınavı düzenle', body, { size: 'wide', noBackdrop: true, buttons: [{ label: 'Vazgeç' }, { label: 'Kaydet', cls: 'primary', fn: async () => {
       clear(err); const sc = scopes[+scopeSel.value]; if (!name.value.trim()) { err.append(h('div', { class: 'alert bad' }, 'Sınav adı gerekli.')); return false; }
       if (!sc) { err.append(h('div', { class: 'alert bad' }, 'Kapsam seçin (önce Yönetim → Okullar bölümünden okul ekleyin).')); return false; }
       if (sections.some(s => !s.name.trim())) { err.append(h('div', { class: 'alert bad' }, 'Bölüm adları boş olamaz.')); return false; }
+      let templateId = tplSel.value;
+      if (templateId.startsWith('std:')) {
+        const e = Katalog.byId(templateId.slice(4)), r = e && tryBuild(Katalog.formOpts(e, { nup: +stdNup.value, digits: +stdD.value, schoolDigits: +stdSd.value }));
+        if (!e || r.error) { err.append(h('div', { class: 'alert bad' }, 'Seçilen hazır form bu ayarlarla sığmıyor: ' + ((r && r.error) || ''))); return false; }
+        if (Katalog.total(e) !== totalN()) { err.append(h('div', { class: 'alert bad' }, `Seçilen hazır form ${Katalog.total(e)} soruluk, sınavınızda ${totalN()} soru var. Soru sayılarını eşitleyin ya da başka form seçin.`)); return false; }
+        const miss = booklets.filter(b => !e.booklets.includes(b)); if (miss.length) { err.append(h('div', { class: 'alert bad' }, `Bu hazır formda kitapçık ${miss.join(', ')} yok (formdaki: ${e.booklets.join(', ')}). Kitapçık türlerini düzeltin ya da "Formlar → Tasarla"dan kendi formunuzu kaydedin.`)); return false; }
+        templateId = Katalog.stdId(e.id, +stdNup.value, { sd: +stdSd.value, d: +stdD.value });
+      } else if (templateId) {
+        const t = S.templates.find(x => x.templateId === templateId);
+        if (t && t.json && t.json.kind === 'generated' && t.json.opts && t.json.opts.questions !== totalN()) { err.append(h('div', { class: 'alert bad' }, `Seçilen şablon ${t.json.opts.questions} soruluk, sınavınızda ${totalN()} soru var.`)); return false; }
+      }
       const config = { sections: sections.map(s => ({ name: s.name.trim(), count: s.count, coef: s.coef })), choices: +choices.value, penalty: parseFloat(pen.value), method: methodSel.value, base: parseFloat(base.value), max: parseFloat(max.value), a: parseFloat(ca.value) || 0, b: parseFloat(cb.value) || 1,
-        keys: Object.fromEntries(booklets.map(b => [b, keys[b] || ''])), booklets, templateId: tplSel.value, showKeys: showKeys.checked, stats: cfg0.stats };
+        keys: Object.fromEntries(booklets.map(b => [b, keys[b] || ''])), booklets, templateId, showKeys: showKeys.checked, stats: cfg0.stats };
       try {
         const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: sc[1], status: status.value, config }, allowIssues: status.value !== 'open' });
         await refreshBase(); draw(); toast('Sınav kaydedildi', 'ok');
@@ -113,4 +143,5 @@ App.views.exams = function (root) {
     } }] });
   }
   draw();
+  if (App.newExam) { const n = App.newExam; App.newExam = null; editExam(null, n); }
 };

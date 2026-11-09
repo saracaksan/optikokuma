@@ -169,18 +169,25 @@ async function getStudents(okulKodu) {
 }
 function examCfg(ex) { const c = Scoring.normalizeCfg(ex.config || {}); return c; }
 
-/** Sınavın okuma şablonunu döndürür (kayıtlı şablon, harici form ya da otomatik). */
+const DEFAULT_FOOTER = 'Sıraç AKSAN · Optik Sistem';
+const formFooter = () => String(Settings.get('formFooter', DEFAULT_FOOTER) || '');
+
+/** Sınavın okuma şablonunu döndürür (hazır katalog formu, kayıtlı şablon, harici form ya da otomatik). */
 function resolveTemplate(ex) {
   const cfg = examCfg(ex), id = ex.config && ex.config.templateId;
   if (id) {
+    const std = Katalog.parseStd(id);
+    if (std) return { tpl: OMR.buildTemplate(Katalog.formOpts(std.entry, { nup: std.nup, digits: std.d, schoolDigits: std.sd, examName: ex.name, footer: formFooter() })), name: `Hazır form: ${std.entry.name}${std.nup > 1 ? ` · ${std.nup}/sayfa` : ''}`, custom: false, std: true };
     const t = App.state.templates.find(x => x.templateId === id);
     if (t && t.json) {
       if (t.json.kind === 'custom') return { tpl: t.json, name: t.name, custom: true };
       if (t.json.kind === 'generated' && t.json.opts) return { tpl: OMR.buildTemplate(t.json.opts), name: t.name, custom: false };
     }
   }
-  return { tpl: OMR.buildTemplate({ title: 'OPTİK CEVAP KAĞIDI', examName: ex.name, questions: cfg.total, choices: cfg.choices, digits: 8, booklets: ex.config.booklets || Object.keys(cfg.keys), nup: 1, sections: cfg.sections }), name: 'Otomatik (1/sayfa, 8 haneli no)', custom: false, auto: true };
+  return { tpl: OMR.buildTemplate({ title: 'OPTİK CEVAP KAĞIDI', examName: ex.name, questions: cfg.total, choices: cfg.choices, digits: 8, booklets: ex.config.booklets || Object.keys(cfg.keys), nup: 1, sections: cfg.sections, layout: 'lanes', footer: formFooter() }), name: 'Otomatik (1/sayfa, 8 haneli no)', custom: false, auto: true };
 }
+/** Bir sınav için beklenen form kimliği (okunan kodla karşılaştırılır); harici formlarda yok. */
+function examFormCode(ex) { try { const t = resolveTemplate(ex).tpl; return t.kind === 'generated' ? t.formCode : null; } catch (e) { return null; } }
 
 /* ------------------------------------------------------------------ kabuk */
 const NAV = [
@@ -254,6 +261,7 @@ App.views.settings = function (root) {
   const url = h('input', { type: 'url', value: Settings.get('apiUrl', '') });
   const auto = h('input', { type: 'checkbox', checked: Settings.get('autoSync', true), onchange: e => { Settings.set('autoSync', e.target.checked); if (e.target.checked && App.syncQueue) App.syncQueue(); } });
   const strict = h('input', { type: 'checkbox', checked: Settings.get('strictFlags', true), onchange: e => Settings.set('strictFlags', e.target.checked) });
+  const ft = h('input', { type: 'text', maxlength: 60, value: formFooter(), placeholder: DEFAULT_FOOTER });
   const o = h('input', { type: 'password', autocomplete: 'current-password' }), n = h('input', { type: 'password', autocomplete: 'new-password' }), msg = h('div');
   root.append(
     h('h1', null, 'Ayarlar'),
@@ -272,6 +280,10 @@ App.views.settings = function (root) {
       h('label', { class: 'row', style: { margin: '.2rem 0 .7rem' } }, strict, 'Zayıf / silinmiş işaretleri de "kontrol gerekli" say (önerilir)'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => { Settings.set('apiUrl', url.value.trim()); toast('Kaydedildi', 'ok'); } }, 'Adresi kaydet'),
         h('button', { class: 'btn', onclick: async () => { try { Settings.set('apiUrl', url.value.trim()); const t0 = Date.now(); await api('me'); toast(`Bağlantı tamam (${Date.now() - t0} ms)`, 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Bağlantıyı dene'))),
+    h('div', { class: 'card' }, h('h2', null, 'Form görünümü'),
+      h('div', { class: 'field' }, h('label', null, 'Basılan formların altındaki küçük yazı'), ft),
+      h('p', { class: 'small muted' }, 'Boş bırakırsanız yazı basılmaz. Form kimlik kodu (sağ alttaki siyah kareler) her zaman basılır; sistem hangi formun okutulduğunu bu koddan tanır.'),
+      h('button', { class: 'btn', onclick: () => { Settings.set('formFooter', ft.value.trim()); toast('Kaydedildi', 'ok'); } }, 'Kaydet')),
     h('div', { class: 'card' }, h('h2', null, 'Parola değiştir'),
       h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Eski parola'), o), h('div', { class: 'field' }, h('label', null, 'Yeni parola (en az 6, yönetici için 8)'), n)), msg,
       h('div', { class: 'row', style: { marginTop: '.7rem' } }, h('button', { class: 'btn', onclick: async () => {
