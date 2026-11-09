@@ -33,41 +33,80 @@ function examCovers(ex, s) {
 }
 
 /* ---------------------------------------------------------------- görüntü yükleme / okuma */
-/* ---- PDF (çok sayfalı tarama): pdf.js uygulamayla birlikte gelir, internet gerekmez ---- */
-let pdfjsP = null; const PDFDOCS = new WeakMap();
+/* PDF ve yaygın raster biçimleri. Bazı uzantıların çözülmesi tarayıcı desteğine bağlıdır. */
+const SCAN_IMAGE_EXT = /\.(jpe?g|png|webp|bmp|tiff?|gif|heic|heif|avif)$/i;
+const SCAN_MAX_EDGE = 5000;
+const SCAN_MAX_PIXELS = 24_000_000;
+const PDFDOCS = new WeakMap();
+let pdfjsP = null;
+function isPdfFile(file) { return /\.pdf$/i.test(file.name || '') || file.type === 'application/pdf'; }
+function isSupportedImageFile(file) { return /^image\//i.test(file.type || '') || SCAN_IMAGE_EXT.test(file.name || ''); }
 function loadPdfJs() {
-  if (!pdfjsP) pdfjsP = import('./vendor/pdf.min.js').then(m => { m.GlobalWorkerOptions.workerSrc = new URL('vendor/pdf.worker.min.js', document.baseURI).href; return m; });
+  if (!pdfjsP) pdfjsP = import('./vendor/pdf.min.js').then(m => {
+    m.GlobalWorkerOptions.workerSrc = new URL('vendor/pdf.worker.min.js', document.baseURI).href;
+    return m;
+  });
   return pdfjsP;
 }
 async function getPdfDoc(file) {
   if (PDFDOCS.has(file)) return PDFDOCS.get(file);
   const pdfjs = await loadPdfJs(), data = new Uint8Array(await file.arrayBuffer());
-  const doc = await pdfjs.getDocument({ data, wasmUrl: new URL('vendor/wasm/', document.baseURI).href }).promise; PDFDOCS.set(file, doc); return doc;
+  const doc = await pdfjs.getDocument({ data, wasmUrl: new URL('vendor/wasm/', document.baseURI).href }).promise;
+  PDFDOCS.set(file, doc); return doc;
 }
 async function pdfSources(file) {
   const doc = await getPdfDoc(file);
   return Array.from({ length: doc.numPages }, (_, i) => ({ kind: 'pdf', file, page: i + 1, name: `${file.name} · s.${i + 1}` }));
 }
+function targetSize(width, height, maxEdge = SCAN_MAX_EDGE, maxPixels = SCAN_MAX_PIXELS) {
+  const edgeScale = maxEdge / Math.max(width, height), pixelScale = Math.sqrt(maxPixels / (width * height));
+  const scale = Math.min(1, edgeScale, pixelScale);
+  return { w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)), scale };
+}
 async function renderPdfPage(src) {
   const doc = await getPdfDoc(src.file), page = await doc.getPage(src.page), v1 = page.getViewport({ scale: 1 });
-  const vp = page.getViewport({ scale: 2800 / Math.max(v1.width, v1.height) });          // uzun kenar ≈ 2800 px (A4'te ~240 dpi)
+  const size = targetSize(v1.width, v1.height, 3200, SCAN_MAX_PIXELS), vp = page.getViewport({ scale: size.scale });
   const cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
-  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
-  await page.render({ canvasContext: cx, canvas: cv, viewport: vp }).promise;
-  const d = cx.getImageData(0, 0, cv.width, cv.height); page.cleanup();
-  return { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  if (!cx) throw new Error('Tarayıcı görüntü belleği oluşturamadı.');
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+  try {
+    await page.render({ canvasContext: cx, canvas: cv, viewport: vp }).promise;
+    const d = cx.getImageData(0, 0, cv.width, cv.height);
+    return { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
+  } finally { page.cleanup(); cv.width = 1; cv.height = 1; }
 }
-
+function imageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Bu tarayıcı dosyanın görüntü biçimini çözemedi. HEIC/HEIF veya TIFF ise JPG/PNG olarak dönüştürüp yeniden deneyin.')); };
+    img.src = url;
+  });
+}
 async function loadGray(file) {
   if (file.kind === 'pdf') return renderPdfPage(file);
-  let bmp;
-  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
-  catch (e) { try { bmp = await createImageBitmap(file); } catch (e2) { throw new Error('Görüntü açılamadı (JPG veya PNG kullanın).'); } }
-  const sc = Math.min(1, 4200 / Math.max(bmp.width, bmp.height)), w = Math.round(bmp.width * sc), hh = Math.round(bmp.height * sc);
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
-  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, hh); if (bmp.close) bmp.close();
-  const d = cx.getImageData(0, 0, w, hh);
-  return { gray: OMR.rgbaToGray(d.data, w, hh), w, h: hh };
+  let source = null, width = 0, height = 0, closeSource = false;
+  if (typeof createImageBitmap === 'function') {
+    try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); width = source.width; height = source.height; closeSource = true; }
+    catch (_) {
+      try { source = await createImageBitmap(file); width = source.width; height = source.height; closeSource = true; }
+      catch (_) { source = null; }
+    }
+  }
+  if (!source) { source = await imageFromFile(file); width = source.naturalWidth; height = source.naturalHeight; }
+  if (!width || !height) { if (closeSource && source.close) source.close(); throw new Error('Görüntü boyutları okunamadı.'); }
+  const size = targetSize(width, height), cv = document.createElement('canvas'); cv.width = size.w; cv.height = size.h;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  if (!cx) { if (closeSource && source.close) source.close(); throw new Error('Tarayıcı görüntü belleği oluşturamadı.'); }
+  try {
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, size.w, size.h); cx.drawImage(source, 0, 0, size.w, size.h);
+    const d = cx.getImageData(0, 0, size.w, size.h);
+    return { gray: OMR.rgbaToGray(d.data, size.w, size.h), w: size.w, h: size.h };
+  } catch (e) {
+    if (e && e.name === 'SecurityError') throw new Error('Görüntü güvenlik nedeniyle okunamadı. Dosyayı cihazınıza kaydedip yeniden seçin.');
+    throw e;
+  } finally { if (closeSource && source.close) source.close(); cv.width = 1; cv.height = 1; }
 }
 
 function runRead(img, tpl, opts) {
@@ -172,10 +211,10 @@ App.views.scan = function (root) {
   const exSel = h('select', { id: 'sc-exam' }, open.length ? open.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}`)) : h('option', { value: '' }, '(açık sınav yok)'));
   const scSel = h('select', { id: 'sc-school' });
   const info = h('div'), listBox = h('div'), progBox = h('div');
-  const fileIn = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
-  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
+  const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf,image/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.heic,.heif,.avif', multiple: true, class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
+  const camIn = h('input', { type: 'file', accept: 'image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.avif', capture: 'environment', class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
   const drop = h('div', { class: 'drop', id: 'sc-drop' },
-    h('p', { style: { margin: '0 0 .6rem' } }, 'Taranmış formları (PDF, JPG, PNG) buraya bırakın ya da seçin. Çok sayfalı PDF sayfa sayfa okunur.'),
+    h('p', { style: { margin: '0 0 .6rem' } }, 'PDF veya görüntü dosyalarını (JPG, PNG, WEBP, BMP, TIFF, GIF, HEIC/HEIF, AVIF) buraya bırakın ya da seçin. Çok sayfalı PDF sayfa sayfa okunur; bazı biçimler tarayıcı desteğine bağlıdır.'),
     h('div', { class: 'row', style: { justifyContent: 'center' } },
       h('button', { class: 'btn primary', id: 'sc-live', onclick: () => openLive() }, '📷 Canlı kamera (otomatik okuma)'),
       h('button', { class: 'btn', id: 'sc-pick', onclick: () => fileIn.click() }, 'Dosya seç'),
@@ -236,12 +275,15 @@ App.views.scan = function (root) {
     if (SC.busy) return toast('Önceki okutma sürüyor, bekleyin.', 'bad');
     const ex = examById(SC.examId); if (!ex) return toast('Önce sınav seçin.', 'bad');
     if (!SC.okulKodu) return toast('Önce okul seçin.', 'bad');
-    SC.busy = true; const src = [];
+    SC.busy = true; const src = [], skipped = [];
     for (const f of files) {
-      if (/pdf/i.test(f.type) || /\.pdf$/i.test(f.name)) {
-        try { src.push(...(await pdfSources(f))); } catch (e) { toast(`${f.name}: PDF açılamadı (${e.message}). Bozuk ya da şifreli olabilir; JPG/PNG olarak da kaydedebilirsiniz.`, 'bad'); }
-      } else if (/^image\//.test(f.type) || /\.(jpe?g|png|webp|bmp)$/i.test(f.name)) src.push(f);
+      if (isPdfFile(f)) {
+        try { src.push(...(await pdfSources(f))); }
+        catch (e) { skipped.push(`${f.name}: PDF açılamadı (${e.message})`); }
+      } else if (isSupportedImageFile(f)) src.push(f);
+      else skipped.push(`${f.name}: desteklenmeyen dosya türü`);
     }
+    if (skipped.length) toast(skipped.slice(0, 3).join(' · ') + (skipped.length > 3 ? ` · +${skipped.length - 3} dosya` : ''), 'bad');
     files = src; if (!files.length) { SC.busy = false; return; }
     for (let i = 0; i < files.length; i++) {
       clear(progBox).append(h('div', { class: 'card' }, h('div', { class: 'small muted' }, `Okunuyor: ${files[i].name} (${i + 1}/${files.length})`), h('div', { class: 'progress' }, h('div', { style: { width: (100 * i / files.length) + '%' } }))));
