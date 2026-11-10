@@ -1,4 +1,4 @@
-/* AKSAN OMR - arka plan okuma işçisi */
+/* AKSAN OMR Worker — hata yalıtımlı okuma ve önizleme üretimi */
 importScripts('omr-core.js');
 onmessage = function (e) {
   var d = e.data;
@@ -14,10 +14,14 @@ onmessage = function (e) {
           var rc = OMR.rectify(img, f.H, frame, scale);
           previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s: scale });
         } catch (previewError) {
-          // Önizleme hatası başarılı optik okumayı geçersiz kılmamalı.
+          // Önizleme üretilememesi başarılı optik okumayı geçersiz kılmaz.
+          f.previewError = String(previewError && previewError.message || previewError);
         } finally { delete f.H; }
       });
     }
-    postMessage({ id: d.id, res: res, previews: previews }, previews.map(function (p) { return p.gray.buffer; }));
-  } catch (err) { postMessage({ id: d.id, error: String(err && err.message || err) }); }
+    var transfers = previews.map(function (p) { return p.gray.buffer; });
+    postMessage({ id: d.id, res: res, previews: previews }, transfers);
+  } catch (err) {
+    postMessage({ id: d.id, error: String(err && err.message || err) });
+  }
 };
