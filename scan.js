@@ -114,7 +114,12 @@ function runRead(img, tpl, opts) {
     const fallback = () => {
       try {
         const res = OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
-        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); delete f.H; });
+        if (res.ok) res.forms.forEach(f => {
+          if (!f.ok) return;
+          try { const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); }
+          catch (previewError) { f.previewError = String(previewError && previewError.message || previewError); }
+          finally { delete f.H; }
+        });
         resolve({ res, previews });
       } catch (e) { resolve({ error: e.message }); }
     };
@@ -122,7 +127,12 @@ function runRead(img, tpl, opts) {
     try {
       if (!SC.worker) SC.worker = new Worker('worker.js');
       const id = ++SC.seq, w = SC.worker;
-      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); resolve(e.data); };
+      const on = e => {
+        if (e.data.id !== id) return;
+        w.removeEventListener('message', on); w.removeEventListener('error', onErr);
+        if (e.data.error) { SC.worker = null; fallback(); return; }
+        resolve(e.data);
+      };
       const onErr = () => { w.removeEventListener('message', on); w.removeEventListener('error', onErr); SC.worker = null; fallback(); };
       w.addEventListener('message', on); w.addEventListener('error', onErr);
       const copy = img.gray.slice();                       // orijinali (elle köşe vb. için) bozmamak için kopya aktarılır
