@@ -114,7 +114,7 @@ function runRead(img, tpl, opts) {
     const fallback = () => {
       try {
         const res = OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
-        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; try { const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); } catch (previewError) { console.warn('Önizleme üretilemedi; okunan cevaplar korunuyor.', previewError); } finally { delete f.H; } });
+        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); delete f.H; });
         resolve({ res, previews });
       } catch (e) { resolve({ error: e.message }); }
     };
@@ -122,7 +122,7 @@ function runRead(img, tpl, opts) {
     try {
       if (!SC.worker) SC.worker = new Worker('worker.js');
       const id = ++SC.seq, w = SC.worker;
-      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); if (e.data.error) { SC.worker = null; fallback(); } else resolve(e.data); };
+      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); resolve(e.data); };
       const onErr = () => { w.removeEventListener('message', on); w.removeEventListener('error', onErr); SC.worker = null; fallback(); };
       w.addEventListener('message', on); w.addEventListener('error', onErr);
       const copy = img.gray.slice();                       // orijinali (elle köşe vb. için) bozmamak için kopya aktarılır
@@ -389,14 +389,53 @@ App.views.scan = function (root) {
     function draw() {
       const r = cur(); if (!r || !r.pv || !img.complete) return;
       canvas.width = r.pv.w; canvas.height = r.pv.h; const cx = canvas.getContext('2d'); cx.drawImage(img, 0, 0); const s = r.pv.s, rad = tpl.r * s * 0.70;
-      cx.lineWidth = Math.max(1.25, rad * 0.13);
+      cx.lineWidth = Math.max(1.5, rad * 0.13);
+      // Cevap anahtarı: seçili kitapçık; yoksa puanlama motoruyla aynı ilk-anahtar geri dönüşü.
+      const keyNames = Object.keys(cfg.keys || {});
+      const keyBooklet = (r.booklet && cfg.keys[r.booklet]) ? r.booklet : keyNames[0];
+      const answerKey = keyBooklet ? String(cfg.keys[keyBooklet] || '') : '';
+      const ring = (x, y, color, radius = rad, dashed = false) => {
+        cx.strokeStyle = color; cx.lineWidth = Math.max(1.5, rad * 0.13);
+        cx.setLineDash(dashed ? [Math.max(3, rad * .55), Math.max(2, rad * .35)] : []);
+        cx.beginPath(); cx.arc(x * s, y * s, radius, 0, Math.PI * 2); cx.stroke();
+        cx.setLineDash([]);
+      };
       for (let q = 1; q <= cfg.total; q++) {
-        const p = qpos[q]; if (!p) continue; const a = r.answers[q - 1], fl = r.flags.find(f => f.q === q), ed = r.edits[q];
-        if (q === activeQ) { cx.fillStyle = 'rgba(255,214,0,.28)'; cx.fillRect((p.xs[0] - tpl.r * 2.2) * s, (p.y - tpl.r * 1.5) * s, (p.xs[p.xs.length - 1] - p.xs[0] + tpl.r * 4.4) * s, tpl.r * 3 * s); }
-        if (a === '*') { cx.strokeStyle = '#ff7a00'; p.xs.forEach(x => { cx.beginPath(); cx.arc(x * s, p.y * s, rad, 0, 7); cx.stroke(); }); continue; }
-        const j = p.labels.indexOf(a);
-        if (j >= 0) { cx.strokeStyle = ed ? '#2d6df6' : (fl ? '#ff7a00' : '#16a34a'); cx.beginPath(); cx.arc(p.xs[j] * s, p.y * s, rad, 0, 7); cx.stroke(); }
-        else if (fl && fl.type === 'weak') { cx.strokeStyle = '#ff7a00'; cx.setLineDash([4, 4]); p.xs.forEach(x => { cx.beginPath(); cx.arc(x * s, p.y * s, rad, 0, 7); cx.stroke(); }); cx.setLineDash([]); }
+        const p = qpos[q]; if (!p) continue;
+        const a = r.answers[q - 1] || '-', fl = r.flags.find(f => f.q === q), ed = r.edits[q];
+        const k = answerKey[q - 1] || '';
+        if (q === activeQ) {
+          cx.fillStyle = 'rgba(255,214,0,.20)';
+          cx.fillRect((p.xs[0] - tpl.r * 2.2) * s, (p.y - tpl.r * 1.5) * s,
+            (p.xs[p.xs.length - 1] - p.xs[0] + tpl.r * 4.4) * s, tpl.r * 3 * s);
+        }
+
+        // Boş soru: seçeneklerin çevresi gri kesikli; doğru seçenek ayrıca sarı.
+        if (a === '-') {
+          p.xs.forEach(x => ring(x, p.y, '#9299a3', rad * .92, true));
+          if (p.labels.includes(k)) ring(p.xs[p.labels.indexOf(k)], p.y, '#f2c300', rad * 1.28);
+          if (fl && fl.type === 'weak') p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.48, true));
+          continue;
+        }
+
+        // Çoklu işaret: OMR sonucu '*' olduğundan tek tek hangi kalem izinin seçildiğini
+        // kesinleştirmeden tüm satır turuncu gösterilir; cevap anahtarı sarı kalır.
+        if (a === '*') {
+          p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.05));
+          if (p.labels.includes(k)) ring(p.xs[p.labels.indexOf(k)], p.y, '#f2c300', rad * 1.42);
+          continue;
+        }
+
+        const j = p.labels.indexOf(a), kj = p.labels.indexOf(k);
+        if (kj >= 0) ring(p.xs[kj], p.y, '#f2c300', rad * 1.30);
+        if (j >= 0) {
+          if (ed) ring(p.xs[j], p.y, '#2d6df6', rad * .88);
+          else if (fl) ring(p.xs[j], p.y, '#f08a24', rad * .98);
+          else if (a === k) ring(p.xs[j], p.y, '#16a34a', rad * .88);
+          else ring(p.xs[j], p.y, '#dc2626', rad * .98);
+        } else if (fl && fl.type === 'weak') {
+          p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.05, true));
+        }
       }
       ['studentNo', 'schoolCode'].forEach(role => {
         const gno = tpl.groups.find(g => g.role === role), rg = r.groups.find(g => g.role === role); if (!gno || !rg) return;
@@ -466,7 +505,7 @@ App.views.scan = function (root) {
       const v = visible(), nxt = v.find(i => i > idx && SC.forms[i].status !== 'saved'); evalAll(); renderList();
       if (nxt !== undefined) { idx = nxt; activeQ = 1; paintAll(); } else { dlg.close(); if (Settings.get('autoSync', true) && App.state.online) App.syncQueue(); }
     };
-    body.append(h('div', { class: 'review' }, h('div', null, wrap, h('p', { class: 'small muted' }, 'Yeşil: okunan işaret · Turuncu: şüpheli · Mavi: sizin düzeltmeniz. Büyütmek için görüntüye dokunun.')),
+    body.append(h('div', { class: 'review' }, h('div', null, wrap, h('p', { class: 'small muted' }, 'Sarı: cevap anahtarı · Yeşil: doğru işaret · Kırmızı: yanlış işaret · Gri kesikli: boş · Turuncu: çoklu/belirsiz · Mavi: sizin düzeltmeniz. Büyütmek için görüntüye dokunun.')),
       h('div', null, fields, h('div', { class: 'row between', style: { margin: '.6rem 0 .3rem' } }, h('b', null, 'Cevaplar'), h('label', { class: 'small row' }, h('input', { type: 'checkbox', onchange: e => { onlyFlags = e.target.checked; paintGrid(); } }), 'yalnız sorunlular')),
         grid, h('p', { class: 'small muted' }, 'Hücreye dokununca cevap döner (· → A → B …). Klavye: ', h('span', { class: 'kb' }, 'A–E'), ' cevap, ', h('span', { class: 'kb' }, 'Boşluk'), ' boş, ', h('span', { class: 'kb' }, '← →'), ' soru değiştir.'), sumBox)));
     const onKey = e => {
