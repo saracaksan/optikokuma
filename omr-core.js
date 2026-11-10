@@ -26,7 +26,7 @@
   const AREA = { x: 15, y: 16, w: 180, h: 265 };
   const LETTERS = 'ABCDEFGH';
   const CODE_CELLS = 33;   // 1 başlangıç + 24 bit kimlik + 8 bit sağlama
-  const VERSION = '2.1.0-aksan-omr';
+  const VERSION = '2.2.0-aksan-localwarp-color';
 
   function pageForms(nup) {
     if (nup === 1) return [{ x: 0, y: 0, w: PAGE.w, h: PAGE.h }];
@@ -392,7 +392,13 @@
   /* ------------------------------------------------------------------ */
   function rgbaToGray(rgba, w, h) {
     const g = new Uint8Array(w * h);
-    for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8;
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+      const r = rgba[j], gg = rgba[j + 1], b = rgba[j + 2];
+      const lum = (r * 77 + gg * 150 + b * 29) >> 8;
+      // Sarı/kırmızı/mavi kalem izlerini yalnızca klasik gri dönüşümüne göre daha görünür kıl.
+      const chromaInk = Math.min(r, gg, b);
+      g[i] = Math.max(0, Math.min(255, Math.round(lum * 0.62 + chromaInk * 0.38)));
+    }
     return g;
   }
   function boxDown(g, w, h, f) {
@@ -515,7 +521,10 @@
       const asp = ((top + bot) / 2) / ((lef + rig) / 2);
       if (aspect) { const e = Math.min(Math.abs(asp / aspect - 1), Math.abs(asp * aspect - 1)); if (e > 0.4) continue; }
       const areas = q.map(c => c.area); if (Math.max(...areas) / Math.min(...areas) > 3) continue;
-      const score = polyArea(P); if (!best || score > best.score) best = { score, P };
+      const cross = P.map((p, i) => { const a = P[(i + 1) % 4], b = P[(i + 2) % 4]; return (a[0]-p[0])*(b[1]-a[1]) - (a[1]-p[1])*(b[0]-a[0]); });
+      if (cross.some(v => Math.abs(v) < maxDim * maxDim * 0.0002) || !(cross.every(v => v > 0) || cross.every(v => v < 0))) continue;
+      const edgeBalance = Math.min(top, bot) / Math.max(top, bot) * Math.min(lef, rig) / Math.max(lef, rig);
+      const score = polyArea(P) * edgeBalance; if (!best || score > best.score) best = { score, P };
     }
     return best ? best.P : null;
   }
@@ -570,8 +579,36 @@
     return n ? sum / n : (a[0] || 0);
   }
 
+  /**
+   * Yerel baloncuk hizalama: kâğıt kıvrılması/mercek kaynaklı küçük yerel
+   * kaymaları her baloncukta ayrı arar. Basılı dairesel konturun kontrastını
+   * en yüksek yapan merkez seçilir; cevap içindeki kalem izi merkeze yön vermez.
+   */
+  function alignBubbleCenter(g, w, h, H, cx, cy, r) {
+    const offsets = [-0.24, 0, 0.24];
+    let best = { x: cx, y: cy, score: -Infinity, dx: 0, dy: 0 };
+    for (const oy of offsets) for (const ox of offsets) {
+      const tx = cx + ox * r, ty = cy + oy * r, edge = [], paper = [];
+      for (const [ax, ay] of RING) {
+        const p = applyH(H, tx + ax * r * 0.72, ty + ay * r * 0.72);
+        edge.push(bil(g, w, h, p[0], p[1]));
+      }
+      for (const [ax, ay] of [[-1.55,0],[1.55,0],[0,-1.55],[0,1.55],[-1.1,-1.1],[1.1,-1.1],[-1.1,1.1],[1.1,1.1]]) {
+        const p = applyH(H, tx + ax * r, ty + ay * r);
+        paper.push(bil(g, w, h, p[0], p[1]));
+      }
+      const edgeInk = 255 - trimmedMean(edge, 0.18);
+      const paperLevel = trimmedMean(paper, 0.12);
+      const score = edgeInk + Math.max(0, paperLevel - trimmedMean(edge, 0.18)) * 0.18;
+      if (score > best.score) best = { x: tx, y: ty, score, dx: ox, dy: oy };
+    }
+    return best;
+  }
+
   /** Baloncuk analizi: yerel kâğıt referansı + yoğun örneklemeli iç alan analizi. */
   function bubbleMeasure(g, w, h, H, cx, cy, r) {
+    const aligned = alignBubbleCenter(g, w, h, H, cx, cy, r);
+    cx = aligned.x; cy = aligned.y;
     const inner = [], ring = [];
     for (const [ox, oy] of INNER) {
       const p = applyH(H, cx + ox * r * 0.88, cy + oy * r * 0.88);
@@ -588,7 +625,7 @@
     // Kenar çizgisi / komşu baskı / gölge etkisini anlamak için örnek dağılımı.
     const sorted = inner.slice().sort((a, b) => a - b);
     const spread = sorted[Math.floor(sorted.length * 0.9)] - sorted[Math.floor(sorted.length * 0.1)];
-    return { score, paper, ink, contrast, spread };
+    return { score, paper, ink, contrast, spread, centerDx: aligned.dx, centerDy: aligned.dy };
   }
 
   function bubbleDark(g, w, h, H, cx, cy, r) {
@@ -635,7 +672,7 @@
         return {
           v, d: sc, flag: dcd.flag, confidence: dcd.confidence, margin: dcd.margin,
           // Ölçüm bilgisi inceleme ekranında kullanılabilir; eski tüketiciler bu alanları yok sayabilir.
-          quality: measures.map(m => ({ contrast: +m.contrast.toFixed(3), paper: +m.paper.toFixed(2), spread: +m.spread.toFixed(2) }))
+          quality: measures.map(m => ({ contrast: +m.contrast.toFixed(3), paper: +m.paper.toFixed(2), spread: +m.spread.toFixed(2), alignX: +m.centerDx.toFixed(2), alignY: +m.centerDy.toFixed(2) }))
         };
       });
       res.groups.push({ id: gr.id, role: gr.role, axis: gr.axis, lines });
@@ -679,18 +716,6 @@
   /*  Sayfa okuma (köşe bulma, yön, sığdırma)                            */
   /* ------------------------------------------------------------------ */
   function pxPerUnit(H, ux, uy, span) { const a = applyH(H, ux, uy), b = applyH(H, ux + span, uy); return dist(a, b) / span; }
-  // Perspektifli görüntülerde yalnızca üst kenara bakma: dört kenarın yerel
-  // ölçeklerini birlikte kullan. Böylece köşe araması küçük baloncuklarda da
-  // görüntünün gerçek ölçeğine daha iyi uyum sağlar.
-  function estimatePxScale(H, A) {
-    const edges = [[0,1],[1,2],[2,3],[3,0]], vals = [];
-    for (const [i,j] of edges) {
-      const du = Math.hypot(A[j][0]-A[i][0], A[j][1]-A[i][1]);
-      if (du > 0) vals.push(dist(applyH(H,A[i][0],A[i][1]), applyH(H,A[j][0],A[j][1])) / du);
-    }
-    vals.sort((a,b)=>a-b);
-    return vals.length ? (vals.length % 2 ? vals[(vals.length-1)/2] : (vals[vals.length/2-1]+vals[vals.length/2])/2) : 1;
-  }
 
   function readPageCore(img, tpl, opts) {
     opts = opts || {};
@@ -735,21 +760,18 @@
     if (!Hp) { out.error = 'Köşe noktalarından dönüşüm hesaplanamadı.'; return out; }
 
     const forms = (tpl.kind === 'generated') ? pageForms(nup) : [{ x: 0, y: 0, w: tpl.frame.w, h: tpl.frame.h }];
-    const scale = estimatePxScale(Hp, pageAnchors);
+    const scale = pxPerUnit(Hp, pageAnchors[0][0], pageAnchors[0][1], 10);
     forms.forEach((F, idx) => {
       let Hf = null, refined = 0, offs = [];
-      if (tpl.kind === 'generated') {
-        // Her form için kendi dört basılı referans karesini tekrar bul.
-        // Tekli formda da (nup=1) bu adım uygulanır; çoklu sayfada her
-        // küçük formun köşeleri ayrı ayrı düzeltilir.
+      if (tpl.kind === 'generated' && nup > 1) {
         const px = tpl.anchors.map(a => {
-          const ux = F.x + a[0], uy = F.y + a[1], e = applyH(Hp, ux, uy);
-          const rr = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize, 5.5);
-          if (rr) { refined++; offs.push(Math.hypot(rr.x - e[0], rr.y - e[1]) / Math.max(scale, 0.001)); return [rr.x, rr.y]; }
-          return e;
+          const e = applyH(Hp, F.x + a[0], F.y + a[1]);
+          const r = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize);
+          if (r) { refined++; offs.push(Math.hypot(r.x - e[0], r.y - e[1]) / scale); return [r.x, r.y]; } return e;
         });
-        Hf = homography(tpl.anchors, px) || Hp;
-      } else Hf = Hp;
+        Hf = homography(tpl.anchors, px);
+      } else if (tpl.kind === 'generated') Hf = Hp;
+      else Hf = Hp;
       if (!Hf) { out.forms.push({ index: idx, ok: false, error: 'Dönüşüm hesaplanamadı' }); return; }
       const r = readFrame(g, w, h, Hf, tpl);
       r.index = idx; r.ok = true; r.H = Hf; r.refinedMarks = refined; r.markShiftMm = offs.length ? Math.max(...offs) : 0;
@@ -788,7 +810,7 @@
     }
     out.corners = ordered;
     const Hp = homography(A, ordered); if (!Hp) { out.error = 'Köşe noktalarından dönüşüm hesaplanamadı.'; return out; }
-    const scale = estimatePxScale(Hp, A); let refined = 0;
+    const scale = pxPerUnit(Hp, A[0][0], A[0][1], 10); let refined = 0;
     const px = A.map(a => { const e = applyH(Hp, a[0], a[1]), r = refineMark(g, w, h, e[0], e[1], scale, tpl.anchorSize); if (r) { refined++; return [r.x, r.y]; } return e; });
     const Hf = homography(A, px); if (!Hf) { out.error = 'Dönüşüm hesaplanamadı.'; return out; }
     const r = readFrame(g, w, h, Hf, tpl); r.index = 0; r.ok = true; r.H = Hf; r.refinedMarks = refined; r.markShiftMm = 0;
