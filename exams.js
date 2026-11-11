@@ -105,7 +105,7 @@ App.views.exams = function (root) {
     }
     stdD.addEventListener('change', drawStd); stdSd.addEventListener('change', drawStd);
     const status = h('select', null, h('option', { value: 'open' }, 'Okutmaya açık'), h('option', { value: 'draft' }, 'Taslak (okutulamaz)'), h('option', { value: 'closed' }, 'Kapalı')); status.value = ex ? ex.status : 'open';
-    const showKeys = h('input', { type: 'checkbox', checked: c0.showKeys !== false });
+    const showKeys = h('input', { type: 'checkbox', checked: c0.showKeys !== false }), veli = h('input', { type: 'checkbox', checked: c0.veli === true, id: 'ex-veli' });
     const err = h('div');
     drawSections(); drawMethod(); drawKeys(); drawStd();
     if (init && init.entryId) { const e = Katalog.byId(init.entryId); if (e) { preset.value = e.group !== 'tek' ? e.id : ''; applyEntry(e, true); if (init.nup) stdNup.value = init.nup; if (init.d != null) stdD.value = init.d; stdSd.value = init.sd || 0; drawStd(); } }
@@ -117,7 +117,8 @@ App.views.exams = function (root) {
       h('h3', { style: { marginTop: '1rem' } }, 'Kitapçıklar ve cevap anahtarı'), h('div', { class: 'field', style: { maxWidth: '260px' } }, h('label', null, 'Kitapçık türleri (virgülle)'), bkIn), keyBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Optik form'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Optik form (okuma şablonu)'), tplSel), h('div', { class: 'field' }, h('label', null, 'Durum'), status)), stdBox, stdInfo,
       h('p', { class: 'small muted' }, 'Hazır formu Formlar → Hazır şablonlar sayfasından yazdırın; okutma aynı formu otomatik tanır. Kendi formunuzu Formlar → Tasarla bölümünde oluşturup kaydederseniz burada "Kayıtlı şablonlarım" altında seçersiniz.'),
-      h('label', { class: 'row', style: { marginTop: '.4rem' } }, showKeys, 'Okul kullanıcıları cevap anahtarını görebilsin (okutma sırasında D/Y/B gösterilir)'), err);
+      h('label', { class: 'row', style: { marginTop: '.4rem' } }, showKeys, 'Okul kullanıcıları cevap anahtarını görebilsin (okutma sırasında D/Y/B gösterilir)'),
+      h('label', { class: 'row', style: { marginTop: '.4rem' } }, veli, 'Sonuçlar öğrenci/veli sorgulamasına açık olsun (okul + sınıf + okul numarasıyla; taslak sınavlar hariç). Kapalıyken öğrenciler hiçbir şey göremez.'), err);
     const dlg = modal(isNew ? 'Yeni sınav' : 'Sınavı düzenle', body, { size: 'wide', noBackdrop: true, buttons: [{ label: 'Vazgeç' }, { label: 'Kaydet', cls: 'primary', fn: async () => {
       clear(err); const sc = scopes[+scopeSel.value]; if (!name.value.trim()) { err.append(h('div', { class: 'alert bad' }, 'Sınav adı gerekli.')); return false; }
       if (!sc) { err.append(h('div', { class: 'alert bad' }, 'Kapsam seçin (önce Yönetim → Okullar bölümünden okul ekleyin).')); return false; }
@@ -134,7 +135,7 @@ App.views.exams = function (root) {
         if (t && t.json && t.json.kind === 'generated' && t.json.opts && t.json.opts.questions !== totalN()) { err.append(h('div', { class: 'alert bad' }, `Seçilen şablon ${t.json.opts.questions} soruluk, sınavınızda ${totalN()} soru var.`)); return false; }
       }
       const config = { sections: sections.map(s => ({ name: s.name.trim(), count: s.count, coef: s.coef })), choices: +choices.value, penalty: parseFloat(pen.value), method: methodSel.value, base: parseFloat(base.value), max: parseFloat(max.value), a: parseFloat(ca.value) || 0, b: parseFloat(cb.value) || 1,
-        keys: Object.fromEntries(booklets.map(b => [b, keys[b] || ''])), booklets, templateId, showKeys: showKeys.checked, stats: cfg0.stats };
+        keys: Object.fromEntries(booklets.map(b => [b, keys[b] || ''])), booklets, templateId, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
       try {
         const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: sc[1], status: status.value, config }, allowIssues: status.value !== 'open' });
         await refreshBase(); draw(); toast('Sınav kaydedildi', 'ok');

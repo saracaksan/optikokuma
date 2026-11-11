@@ -4,6 +4,13 @@
 const IL_81 = ['Adana', 'Adıyaman', 'Afyonkarahisar', 'Ağrı', 'Aksaray', 'Amasya', 'Ankara', 'Antalya', 'Ardahan', 'Artvin', 'Aydın', 'Balıkesir', 'Bartın', 'Batman', 'Bayburt', 'Bilecik', 'Bingöl', 'Bitlis', 'Bolu', 'Burdur', 'Bursa', 'Çanakkale', 'Çankırı', 'Çorum', 'Denizli', 'Diyarbakır', 'Düzce', 'Edirne', 'Elazığ', 'Erzincan', 'Erzurum', 'Eskişehir', 'Gaziantep', 'Giresun', 'Gümüşhane', 'Hakkari', 'Hatay', 'Iğdır', 'Isparta', 'İstanbul', 'İzmir', 'Kahramanmaraş', 'Karabük', 'Karaman', 'Kars', 'Kastamonu', 'Kayseri', 'Kırıkkale', 'Kırklareli', 'Kırşehir', 'Kilis', 'Kocaeli', 'Konya', 'Kütahya', 'Malatya', 'Manisa', 'Mardin', 'Mersin', 'Muğla', 'Muş', 'Nevşehir', 'Niğde', 'Ordu', 'Osmaniye', 'Rize', 'Sakarya', 'Samsun', 'Siirt', 'Sinop', 'Sivas', 'Şanlıurfa', 'Şırnak', 'Tekirdağ', 'Tokat', 'Trabzon', 'Tunceli', 'Uşak', 'Van', 'Yalova', 'Yozgat', 'Zonguldak'];
 const DUZEYLER = ['Okul öncesi', 'İlkokul', 'Ortaokul', 'Lise', 'Diğer'];
 
+/** Sunucu adresi tanımlı değilse (config.js boş ve bu cihazda girilmemiş) adres isteyen kutu. Yalnızca Google Apps Script adresi kabul edilir. */
+App.urlPrompt = function (box, onSaved) {
+  const u = h('input', { type: 'url', id: 'rg-url', placeholder: 'https://script.google.com/macros/s/…/exec', autocomplete: 'off' });
+  box.append(h('div', { class: 'alert warn' }, 'Bu site için sunucu adresi tanımlı değil. Yöneticinizden adresi isteyin ya da aşağıya yapıştırın.'), h('div', { class: 'field' }, h('label', null, 'Sunucu adresi (Apps Script /exec)'), u),
+    h('button', { class: 'btn', style: { marginTop: '.5rem' }, onclick: () => { const v = u.value.trim(); if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(v)) return toast('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı.', 'bad'); Settings.set('apiUrl', v); onSaved(); } }, 'Kaydet'));
+};
+
 App.renderRegister = function () {
   const app = clear($('#app')), S = { tab: 'ogretmen', places: null };
   const back = h('a', { href: '#', id: 'rg-back', onclick: e => { e.preventDefault(); App.backToApp(); } }, App.state.user ? '← Uygulamaya dön' : '← Girişe dön');
@@ -24,11 +31,7 @@ App.renderRegister = function () {
   const field = (label, input, hint) => h('div', { class: 'field' }, h('label', null, label), input, hint ? h('span', { class: 'small muted' }, hint) : null);
   const inp = (attrs) => h('input', Object.assign({ type: 'text', autocomplete: 'off' }, attrs));
   const honeypot = () => h('div', { class: 'hp', 'aria-hidden': 'true' }, h('label', null, 'Bu alanı boş bırakın'), h('input', { type: 'text', name: 'website', id: 'rg-website', tabindex: '-1', autocomplete: 'off' }));
-  const needUrl = (box) => {   // sunucu adresi yoksa (config.js doldurulmamış ve bu cihazda girilmemiş)
-    const u = inp({ type: 'url', id: 'rg-url', placeholder: 'https://script.google.com/macros/s/…/exec' });
-    box.append(h('div', { class: 'alert warn' }, 'Bu site için sunucu adresi tanımlı değil. Yöneticinizden adresi isteyin ya da aşağıya yapıştırın.'), field('Sunucu adresi (Apps Script /exec)', u),
-      h('button', { class: 'btn', style: { marginTop: '.5rem' }, onclick: () => { const v = u.value.trim(); if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(v)) return toast('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı.', 'bad'); Settings.set('apiUrl', v); S.places = null; draw(); } }, 'Kaydet'));
-  };
+  const needUrl = (box) => App.urlPrompt(box, () => { S.places = null; draw(); });
   const done = (box, title, text) => { clear(box).append(h('div', { class: 'card', id: 'rg-done' }, h('h2', null, title), h('p', null, text), h('p', { class: 'small muted' }, 'Onaylanıp onaylanmadığını, giriş sayfasında kullanıcı adı ve parolanızla denediğinizde görebilirsiniz.'), h('button', { class: 'btn primary', onclick: () => App.backToApp() }, 'Giriş sayfasına git'))); window.scrollTo(0, 0); };
   const passPair = () => { const a = inp({ type: 'password', id: 'rg-pass', autocomplete: 'new-password', placeholder: 'En az 8 karakter' }), b = inp({ type: 'password', id: 'rg-pass2', autocomplete: 'new-password' }); return { a, b, node: h('div', { class: 'grid' }, field('Parola', a), field('Parola (tekrar)', b)) }; };
   const submitter = (btn, err, fn) => async () => { clear(err); btn.disabled = true; const t = btn.textContent; btn.textContent = 'Gönderiliyor…'; try { await fn(); } catch (e) { err.append(h('div', { class: 'alert bad' }, isNetErr(e) ? 'Sunucuya ulaşılamadı. İnternet bağlantınızı kontrol edin.' : e.message)); } btn.disabled = false; btn.textContent = t; };

@@ -259,6 +259,7 @@ App.renderLogin = function (msg) {
   app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, 'Optik Okuma Sistemi'),
     msg ? h('div', { class: 'alert warn' }, msg) : null, h('div', { class: 'card' }, form),
     h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kayit', id: 'f-register' }, 'Üye ol: öğretmen veya okul kaydı')),
+    h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/ogrenci', id: 'f-portal' }, 'Öğrenci / veli: sonuç sorgulama')),
     h('p', { class: 'muted small center' }, 'Okul, ilçe ve il bazlı optik okuma, puanlama ve karşılaştırma.')));
 };
 
@@ -287,6 +288,7 @@ App.views.settings = function (root) {
       h('label', { class: 'row', style: { margin: '.2rem 0 .7rem' } }, strict, 'Zayıf / silinmiş işaretleri de "kontrol gerekli" say (önerilir)'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => { Settings.set('apiUrl', url.value.trim()); toast('Kaydedildi', 'ok'); } }, 'Adresi kaydet'),
         h('button', { class: 'btn', onclick: async () => { try { Settings.set('apiUrl', url.value.trim()); const t0 = Date.now(); await api('me'); toast(`Bağlantı tamam (${Date.now() - t0} ms)`, 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Bağlantıyı dene'))),
+    h('div', { class: 'card' }, h('h2', null, 'Öğrenci / veli sorgulama bağlantısı'), h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Öğrenci ve veliler bu bağlantıdan okul → sınıf → okul numarasıyla sonuçlarını görür. Yalnızca, sınavı düzenlerken "öğrenci/veli sorgulamasına açık" işaretlenen sınavlar görünür.'), (() => { const l = h('input', { type: "text", readOnly: true, id: 'st-portal-link', value: location.origin + location.pathname.replace(/index\.html$/, '') + '#/ogrenci', onfocus: e => e.target.select() }); return h('div', { class: 'linkbox' }, l, h('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(l.value); toast('Kopyalandı', 'ok'); } catch (e) { l.select(); } } }, 'Kopyala')); })()),
     u.role === 'ogretmen' ? h('div', { class: 'card' }, h('h2', null, 'Öğretmen hesabı'), h('p', { class: 'small muted', style: { margin: 0 } }, 'Oluşturduğunuz sınavlar ve sonuçları yalnızca siz ve okul yöneticiniz görür; aynı okuldaki diğer öğretmenler ve ilçe/il yetkilileri göremez. Okulunuzun ortak (kurumsal) sınavlarını yalnızca görüntülersiniz; okutmayı okul yöneticisi yapar.')) : null,
     h('div', { class: 'card' }, h('h2', null, 'Form görünümü'),
       h('div', { class: 'field' }, h('label', null, 'Basılan formların altındaki küçük yazı'), ft),
