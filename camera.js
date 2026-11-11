@@ -3,8 +3,8 @@
 'use strict';
 
 const Camera = (function () {
-  const WORK = 800;            // canlı analiz için kare boyutu (uzun kenar; performans/tespit dengesi)
-  const TICK = 150;            // analiz aralığı (ms)
+  const WORK = 640;            // canlı analiz için kare boyutu (uzun kenar)
+  const TICK = 120;            // analiz aralığı (ms)
   const HOLD = 6;              // sabit kalması gereken ardışık kare sayısı (~0,8 sn)
   const EDGE = 0.015;          // köşe kadraj kenarına bu orandan yakınsa "uzaklaşın"
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -30,7 +30,7 @@ const Camera = (function () {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast('Bu tarayıcıda kamera kullanılamıyor (güvenli bağlantı — https — gerekir).', 'bad');
     const tpl = ctx.tpl, cfg = ctx.cfg, ASP = aspectsOf(tpl), QL = labelsOf(tpl);
     const S = {
-      stream: null, track: null, timer: 0, startSeq: 0, closed: false, phase: 'search', armed: true, lost: 0, hist: [], sheetFor: null,
+      stream: null, track: null, timer: 0, closed: false, phase: 'search', armed: true, lost: 0, hist: [], sheetFor: null,
       auto: Settings.get('camAutoSave', true), facing: 'environment', torch: false, torchOK: false, n: 0, saved: 0, recs: [], ri: 0, ms: 0
     };
 
@@ -67,58 +67,31 @@ const Camera = (function () {
     /* ---------------------------------------------------------------- kamera */
     const work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
     async function start() {
-      const seq = ++S.startSeq;
-      stopStream(); setHint('Yüksek çözünürlüklü kamera açılıyor…', 'busy', '⏳');
-      // Cihazın bildirdiği çözünürlük üst sınırını hedefle; desteklenmeyen değeri zorunlu kılma.
-      const portrait = window.innerHeight > window.innerWidth;
-      const idealW = portrait ? 2160 : 3840, idealH = portrait ? 3840 : 2160;
-      const primary = { video: {
-        facingMode: { ideal: S.facing },
-        width: { ideal: idealW }, height: { ideal: idealH },
-        frameRate: { ideal: 30, max: 30 }
-      }, audio: false };
-      const tries = [primary,
-        { video: { facingMode: { ideal: S.facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
-        { video: { facingMode: { ideal: S.facing } }, audio: false },
-        { video: true, audio: false }];
-      let err = null, stream = null;
+      stopStream(); setHint('Kamera açılıyor…', 'busy', '⏳');
+      const portrait = window.innerHeight > window.innerWidth, W = portrait ? 1440 : 2560, H = portrait ? 2560 : 1440;   // ≈ 8 px/mm: küçük baloncuklar için yeterli çözünürlük
+      const tries = [{ video: { facingMode: { ideal: S.facing }, width: { ideal: W }, height: { ideal: H } }, audio: false }, { video: true, audio: false }];
+      let err = null;
       for (const c of tries) {
-        try { stream = await navigator.mediaDevices.getUserMedia(c); err = null; break; }
+        try { S.stream = await navigator.mediaDevices.getUserMedia(c); err = null; break; }
         catch (e) { err = e; if (e && /NotAllowed|Security/.test(e.name)) break; }
       }
-      if (S.closed || seq !== S.startSeq) { if (stream) stream.getTracks().forEach(t => t.stop()); return; }
-      if (!stream) {
+      if (S.closed) { stopStream(); return; }
+      if (!S.stream) {
         const denied = err && /NotAllowed|Security/.test(err.name);
-        setHint(denied ? 'Kamera izni verilmedi' : 'Kamera açılamadı', 'bad', '⚠', denied ? 'Tarayıcının adres çubuğundan bu site için kamera iznini açın, sonra tekrar deneyin. Ya da Fotoğraf çek / Dosya seç ile devam edin.' : 'Kamera başka bir uygulamada açık olabilir. Fotoğraf çek / Dosya seç ile devam edebilirsiniz.');
+        setHint(denied ? 'Kamera izni verilmedi' : 'Kamera açılamadı', 'bad', '⚠', denied ? 'Tarayıcının adres çubuğundan bu site için kamera iznini açın, sonra tekrar deneyin. Ya da "Fotoğraf çek" / "Dosya seç" ile devam edin.' : 'Kamera başka bir uygulamada açık olabilir. "Fotoğraf çek" / "Dosya seç" ile devam edebilirsiniz.');
         return;
       }
-      S.stream = stream; video.srcObject = stream;
-      try { await video.play(); } catch (e) { }
-      if (S.closed || seq !== S.startSeq) { stopStream(); return; }
-      S.track = stream.getVideoTracks()[0];
+      video.srcObject = S.stream; try { await video.play(); } catch (e) { }
+      S.track = S.stream.getVideoTracks()[0];
       try {
         const cap = S.track.getCapabilities ? S.track.getCapabilities() : {};
-        const adv = [];
-        if (cap.focusMode && cap.focusMode.includes('continuous')) adv.push({ focusMode: 'continuous' });
-        if (cap.exposureMode && cap.exposureMode.includes('continuous')) adv.push({ exposureMode: 'continuous' });
-        if (cap.whiteBalanceMode && cap.whiteBalanceMode.includes('continuous')) adv.push({ whiteBalanceMode: 'continuous' });
-        if (cap.torch) { S.torchOK = true; }
-        if (adv.length) await S.track.applyConstraints({ advanced: adv });
-        btnTorch.classList.toggle('hidden', !S.torchOK); btnTorch.classList.remove('on');
-        const set = S.track.getSettings ? S.track.getSettings() : {};
-        S.cameraInfo = { width: set.width || video.videoWidth, height: set.height || video.videoHeight };
-      } catch (e) {
-        const set = S.track.getSettings ? S.track.getSettings() : {};
-        S.cameraInfo = { width: set.width || video.videoWidth, height: set.height || video.videoHeight };
-      }
+        if (cap.focusMode && cap.focusMode.includes('continuous')) await S.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        S.torchOK = !!cap.torch; S.torch = false; btnTorch.classList.toggle('hidden', !S.torchOK); btnTorch.classList.remove('on');
+      } catch (e) { }
       S.phase = 'search'; S.hist = []; S.lost = 0; S.armed = true;
       clearTimeout(S.timer); S.timer = setTimeout(tick, TICK);
     }
-    function stopStream() {
-      if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; }
-      if (video.srcObject) video.srcObject = null;
-      S.track = null;
-    }
+    function stopStream() { if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; } S.track = null; }
     async function toggleTorch() {
       if (!S.track) return;
       try { S.torch = !S.torch; await S.track.applyConstraints({ advanced: [{ torch: S.torch }] }); btnTorch.classList.toggle('on', S.torch); } catch (e) { S.torch = false; toast('Fener açılamadı.', 'bad'); }
@@ -176,7 +149,7 @@ const Camera = (function () {
     function guideRect(f, quad) {
       let asp = ASP[0];
       if (quad) { const a = ((dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2) / ((dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2); if ((a - 1) * (asp - 1) < 0) asp = 1 / asp; }
-      else if (f.w > f.h && asp < 1) asp = asp;   // yatay kadrajda dik form: kılavuz yine dik
+      else if (f.w > f.h && asp < 1) asp = 1 / asp;   // yatay kadraj: kâğıdı yan çevirin, uzun kenar yatay olsun (kadrajı en iyi doldurur, daha net okunur)
       const mw = f.w * 0.9, mh = f.h * 0.9; let gw = Math.min(mw, mh * asp), gh = gw / asp;
       return { x: (f.w - gw) / 2, y: (f.h - gh) / 2, w: gw, h: gh };
     }
@@ -230,17 +203,26 @@ const Camera = (function () {
       S.phase = 'reading'; S.hist = []; setBar(0); setHint('Okunuyor…', 'busy', '⏳', 'Form işleniyor.');
       flash.classList.add('on'); setTimeout(() => flash.classList.remove('on'), 160);
       let recs = [];
-      try {
-        const vw = video.videoWidth, vh = video.videoHeight;
-        // Tam çözünürlüğü koru; çok büyük sensör karelerinde bellek tüketimini sınırla.
-        const maxEdge = 5000, maxPixels = 24_000_000;
-        const sc = Math.min(1, maxEdge / Math.max(vw, vh), Math.sqrt(maxPixels / (vw * vh)));
-        const cv = document.createElement('canvas');
+      const grab = async () => {
+        const vw = video.videoWidth, vh = video.videoHeight, sc = Math.min(1, 4200 / Math.max(vw, vh)), cv = document.createElement('canvas');
         cv.width = Math.round(vw * sc); cv.height = Math.round(vh * sc);
         const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(video, 0, 0, cv.width, cv.height);
         const d = cx.getImageData(0, 0, cv.width, cv.height), img = { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
-        const blob = await new Promise((resolve, reject) => cv.toBlob(b => b ? resolve(b) : reject(new Error('Kamera görüntüsü JPEG olarak hazırlanamadı.')), 'image/jpeg', 0.94));
-        recs = await ctx.process(blob, img);
+        const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
+        return ctx.process(blob, img);
+      };
+      // sorunsuz okunana kadar en fazla 3 kare dene (odak kayması / el titremesi tek kareyi bozabilir); en az sorunlu kare seçilir
+      const badness = rs => rs.some(r => !r.error) ? rs.reduce((a, r) => a + (r.error ? 3 : r.status === 'ok' ? 0 : 1 + (r.flags ? r.flags.length : 0)), 0) : 999;
+      try {
+        let best = null;
+        for (let k = 0; k < (manual ? 1 : 3); k++) {
+          const rs = await grab(), b = badness(rs);
+          if (best && b >= best.b) rs.forEach(r => { try { ctx.discard && ctx.discard(r); } catch (e) { } });
+          else { if (best) best.rs.forEach(r => { try { ctx.discard && ctx.discard(r); } catch (e) { } }); best = { rs, b }; }
+          if (best.b === 0 || S.closed) break;
+          await new Promise(r => setTimeout(r, 180));
+        }
+        recs = best.rs;
       } catch (e) { recs = [{ error: e.message || 'Okunamadı', status: 'error', flags: [], reasons: [] }]; }
       if (S.closed) return;
       showResult(recs, manual);
@@ -345,7 +327,7 @@ const Camera = (function () {
     function onKey(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
     function close() {
-      if (S.closed) return; S.closed = true; S.startSeq++; clearTimeout(S.timer); stopStream();
+      if (S.closed) return; S.closed = true; clearTimeout(S.timer); stopStream();
       document.removeEventListener('keydown', onKey); root.remove(); document.body.classList.remove('cam-open');
       try { ctx.onClose && ctx.onClose(); } catch (e) { console.error(e); }
     }

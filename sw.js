@@ -1,133 +1,14 @@
-/* AKSAN OMR PWA — Service Worker 2.5.0
- * Uygulama kabuğunu çevrimdışı kullanım için önbelleğe alır.
- * POST istekleri ve farklı alan adlarına giden istekler önbelleğe alınmaz.
- * Güncelleme: VERSION değerini değiştirerek eski uygulama önbelleğini yeniler.
- */
-'use strict';
-
-const VERSION = 'aksan-omr-v5';
-
-const SHELL = [
-  './',
-  'index.html',
-  'style.css',
-  'omr-core.js',
-  'katalog.js',
-  'scoring.js',
-  'app.js',
-  'queue.js',
-  'scan.js',
-  'camera.js',
-  'results.js',
-  'exams.js',
-  'forms.js',
-  'admin.js',
-  'boot.js',
-  'worker.js',
-  'manifest.webmanifest',
-  'icon.svg',
-  'icon-192.png',
-  'icon-512.png'
-];
-
-// PDF motorunun yardımcı dosyaları: bunlardan biri yoksa kurulum iptal edilmez.
-const OPTIONAL = [
-  'vendor/pdf.min.js',
-  'vendor/pdf.worker.min.js',
-  'vendor/wasm/jbig2.wasm',
-  'vendor/wasm/openjpeg.wasm',
-  'vendor/wasm/qcms_bg.wasm'
-];
-
-const APP_CACHE = VERSION;
-
-function isSameOriginGet(request, url) {
-  return request.method === 'GET' && url.origin === self.location.origin;
-}
-
-function isBackendRequest(url) {
-  // Apps Script ve olası API uç noktaları hiçbir koşulda uygulama önbelleğine alınmaz.
-  return /\/(exec|api)(\/|$)/i.test(url.pathname) ||
-         /script\.google\.com|googleapis\.com/i.test(url.hostname);
-}
-
-async function cacheResponse(request, response) {
-  if (!response || !response.ok || response.type === 'opaque') return;
-  const cache = await caches.open(APP_CACHE);
-  await cache.put(request, response.clone());
-}
-
-async function networkFirst(request, isNavigation) {
-  const cache = await caches.open(APP_CACHE);
-
-  try {
-    const response = await fetch(request);
-    if (response && response.ok) {
-      // Yanıtı kullanıcıya geciktirmeden önbelleğe yaz.
-      cacheResponse(request, response).catch(() => {});
-    }
-    return response;
-  } catch (error) {
-    const cached = await cache.match(request);
-    if (cached) return cached;
-
-    // Yalnızca sayfa gezinmelerinde ana sayfaya dön.
-    if (isNavigation) {
-      const home = await cache.match('index.html') || await cache.match('./');
-      if (home) return home;
-    }
-
-    return new Response(
-      isNavigation
-        ? 'Uygulama çevrimdışı ve önbellekte başlangıç sayfası bulunamadı.'
-        : 'İstenen dosya çevrimdışı önbellekte bulunamadı.',
-      {
-        status: 503,
-        statusText: 'Service Unavailable',
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-      }
-    );
-  }
-}
-
-self.addEventListener('install', event => {
-  event.waitUntil((async () => {
-    const cache = await caches.open(APP_CACHE);
-
-    // Temel dosyalardan biri eksikse kurulumun sessizce yarım kalmasını önlemek için
-    // addAll kullanılır. Dosya yolları mevcut proje yapısıyla aynı tutulmuştur.
-    await cache.addAll(SHELL);
-
-    // PDF bağımlılıkları isteğe bağlıdır.
-    await Promise.allSettled(
-      OPTIONAL.map(path => cache.add(path))
-    );
-
-    await self.skipWaiting();
-  })());
-});
-
-self.addEventListener('activate', event => {
-  event.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(
-      keys
-        .filter(key => key !== APP_CACHE)
-        .map(key => caches.delete(key))
-    );
-
-    await self.clients.claim();
-  })());
-});
-
-self.addEventListener('fetch', event => {
-  const request = event.request;
-  const url = new URL(request.url);
-
-  // POST, başka alan adı ve API istekleri: servis çalışanı araya girmez.
-  if (!isSameOriginGet(request, url) || isBackendRequest(url)) return;
-
-  const isNavigation = request.mode === 'navigate';
-
-  event.respondWith(networkFirst(request, isNavigation));
+/* Servis çalışanı: uygulama kabuğunu önbelleğe alır (çevrimdışı açılış). API istekleri (Apps Script) asla önbelleğe alınmaz. */
+const VERSION = 'optik-v5';
+const SHELL = ['./', 'index.html', 'config.js', 'style.css', 'omr-core.js', 'katalog.js', 'scoring.js', 'app.js', 'queue.js', 'scan.js', 'camera.js', 'results.js', 'exams.js', 'forms.js', 'admin.js', 'kayit.js', 'boot.js', 'worker.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const OPTIONAL = ['vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/wasm/jbig2.wasm', 'vendor/wasm/openjpeg.wasm', 'vendor/wasm/qcms_bg.wasm'];   // PDF okuma; indirilemezse kurulum yine de tamamlanır
+self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL).then(() => Promise.allSettled(OPTIONAL.map(u => c.add(u))))).then(() => self.skipWaiting())); });
+self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
+self.addEventListener('fetch', e => {
+  const u = new URL(e.request.url);
+  if (e.request.method !== 'GET' || u.origin !== location.origin) return;     // POST ve başka alan adları: ağa bırak
+  e.respondWith(
+    fetch(e.request).then(r => { if (r.ok) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(e.request, cp)); } return r; })   // önce ağ (güncel kod)
+      .catch(() => caches.match(e.request).then(r => r || caches.match('index.html')))
+  );
 });

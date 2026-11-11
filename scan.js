@@ -22,7 +22,7 @@ function matchSchool(code, sd) {
 }
 /** Katalog/şablon formlarında aynı form türünü (kimlik kodu) kullanan diğer açık sınavlar */
 function examsWithFormCode(code, exceptId) {
-  return App.state.exams.filter(e => e.status === 'open' && e.examId !== exceptId && examFormCode(e) === code);
+  return App.state.exams.filter(e => canScanExam(e) && e.examId !== exceptId && examFormCode(e) === code);
 }
 
 function examCovers(ex, s) {
@@ -33,80 +33,41 @@ function examCovers(ex, s) {
 }
 
 /* ---------------------------------------------------------------- görüntü yükleme / okuma */
-/* PDF ve yaygın raster biçimleri. Bazı uzantıların çözülmesi tarayıcı desteğine bağlıdır. */
-const SCAN_IMAGE_EXT = /\.(jpe?g|png|webp|bmp|tiff?|gif|heic|heif|avif)$/i;
-const SCAN_MAX_EDGE = 5000;
-const SCAN_MAX_PIXELS = 24_000_000;
-const PDFDOCS = new WeakMap();
-let pdfjsP = null;
-function isPdfFile(file) { return /\.pdf$/i.test(file.name || '') || file.type === 'application/pdf'; }
-function isSupportedImageFile(file) { return /^image\//i.test(file.type || '') || SCAN_IMAGE_EXT.test(file.name || ''); }
+/* ---- PDF (çok sayfalı tarama): pdf.js uygulamayla birlikte gelir, internet gerekmez ---- */
+let pdfjsP = null; const PDFDOCS = new WeakMap();
 function loadPdfJs() {
-  if (!pdfjsP) pdfjsP = import('./vendor/pdf.min.js').then(m => {
-    m.GlobalWorkerOptions.workerSrc = new URL('vendor/pdf.worker.min.js', document.baseURI).href;
-    return m;
-  });
+  if (!pdfjsP) pdfjsP = import('./vendor/pdf.min.js').then(m => { m.GlobalWorkerOptions.workerSrc = new URL('vendor/pdf.worker.min.js', document.baseURI).href; return m; });
   return pdfjsP;
 }
 async function getPdfDoc(file) {
   if (PDFDOCS.has(file)) return PDFDOCS.get(file);
   const pdfjs = await loadPdfJs(), data = new Uint8Array(await file.arrayBuffer());
-  const doc = await pdfjs.getDocument({ data, wasmUrl: new URL('vendor/wasm/', document.baseURI).href }).promise;
-  PDFDOCS.set(file, doc); return doc;
+  const doc = await pdfjs.getDocument({ data, wasmUrl: new URL('vendor/wasm/', document.baseURI).href }).promise; PDFDOCS.set(file, doc); return doc;
 }
 async function pdfSources(file) {
   const doc = await getPdfDoc(file);
   return Array.from({ length: doc.numPages }, (_, i) => ({ kind: 'pdf', file, page: i + 1, name: `${file.name} · s.${i + 1}` }));
 }
-function targetSize(width, height, maxEdge = SCAN_MAX_EDGE, maxPixels = SCAN_MAX_PIXELS) {
-  const edgeScale = maxEdge / Math.max(width, height), pixelScale = Math.sqrt(maxPixels / (width * height));
-  const scale = Math.min(1, edgeScale, pixelScale);
-  return { w: Math.max(1, Math.round(width * scale)), h: Math.max(1, Math.round(height * scale)), scale };
-}
 async function renderPdfPage(src) {
   const doc = await getPdfDoc(src.file), page = await doc.getPage(src.page), v1 = page.getViewport({ scale: 1 });
-  const size = targetSize(v1.width, v1.height, 3200, SCAN_MAX_PIXELS), vp = page.getViewport({ scale: size.scale });
+  const vp = page.getViewport({ scale: 2800 / Math.max(v1.width, v1.height) });          // uzun kenar ≈ 2800 px (A4'te ~240 dpi)
   const cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
-  const cx = cv.getContext('2d', { willReadFrequently: true });
-  if (!cx) throw new Error('Tarayıcı görüntü belleği oluşturamadı.');
-  cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
-  try {
-    await page.render({ canvasContext: cx, canvas: cv, viewport: vp }).promise;
-    const d = cx.getImageData(0, 0, cv.width, cv.height);
-    return { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
-  } finally { page.cleanup(); cv.width = 1; cv.height = 1; }
+  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+  await page.render({ canvasContext: cx, canvas: cv, viewport: vp }).promise;
+  const d = cx.getImageData(0, 0, cv.width, cv.height); page.cleanup();
+  return { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
 }
-function imageFromFile(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file), img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Bu tarayıcı dosyanın görüntü biçimini çözemedi. HEIC/HEIF veya TIFF ise JPG/PNG olarak dönüştürüp yeniden deneyin.')); };
-    img.src = url;
-  });
-}
+
 async function loadGray(file) {
   if (file.kind === 'pdf') return renderPdfPage(file);
-  let source = null, width = 0, height = 0, closeSource = false;
-  if (typeof createImageBitmap === 'function') {
-    try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); width = source.width; height = source.height; closeSource = true; }
-    catch (_) {
-      try { source = await createImageBitmap(file); width = source.width; height = source.height; closeSource = true; }
-      catch (_) { source = null; }
-    }
-  }
-  if (!source) { source = await imageFromFile(file); width = source.naturalWidth; height = source.naturalHeight; }
-  if (!width || !height) { if (closeSource && source.close) source.close(); throw new Error('Görüntü boyutları okunamadı.'); }
-  const size = targetSize(width, height), cv = document.createElement('canvas'); cv.width = size.w; cv.height = size.h;
-  const cx = cv.getContext('2d', { willReadFrequently: true });
-  if (!cx) { if (closeSource && source.close) source.close(); throw new Error('Tarayıcı görüntü belleği oluşturamadı.'); }
-  try {
-    cx.fillStyle = '#fff'; cx.fillRect(0, 0, size.w, size.h); cx.drawImage(source, 0, 0, size.w, size.h);
-    const d = cx.getImageData(0, 0, size.w, size.h);
-    return { gray: OMR.rgbaToGray(d.data, size.w, size.h), w: size.w, h: size.h };
-  } catch (e) {
-    if (e && e.name === 'SecurityError') throw new Error('Görüntü güvenlik nedeniyle okunamadı. Dosyayı cihazınıza kaydedip yeniden seçin.');
-    throw e;
-  } finally { if (closeSource && source.close) source.close(); cv.width = 1; cv.height = 1; }
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch (e) { try { bmp = await createImageBitmap(file); } catch (e2) { throw new Error('Görüntü açılamadı (JPG veya PNG kullanın).'); } }
+  const sc = Math.min(1, 4200 / Math.max(bmp.width, bmp.height)), w = Math.round(bmp.width * sc), hh = Math.round(bmp.height * sc);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
+  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, hh); if (bmp.close) bmp.close();
+  const d = cx.getImageData(0, 0, w, hh);
+  return { gray: OMR.rgbaToGray(d.data, w, hh), w, h: hh };
 }
 
 function runRead(img, tpl, opts) {
@@ -114,12 +75,7 @@ function runRead(img, tpl, opts) {
     const fallback = () => {
       try {
         const res = OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
-        if (res.ok) res.forms.forEach(f => {
-          if (!f.ok) return;
-          try { const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); }
-          catch (previewError) { f.previewError = String(previewError && previewError.message || previewError); }
-          finally { delete f.H; }
-        });
+        if (res.ok) res.forms.forEach(f => { if (!f.ok) return; const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); delete f.H; });
         resolve({ res, previews });
       } catch (e) { resolve({ error: e.message }); }
     };
@@ -127,12 +83,7 @@ function runRead(img, tpl, opts) {
     try {
       if (!SC.worker) SC.worker = new Worker('worker.js');
       const id = ++SC.seq, w = SC.worker;
-      const on = e => {
-        if (e.data.id !== id) return;
-        w.removeEventListener('message', on); w.removeEventListener('error', onErr);
-        if (e.data.error) { SC.worker = null; fallback(); return; }
-        resolve(e.data);
-      };
+      const on = e => { if (e.data.id !== id) return; w.removeEventListener('message', on); w.removeEventListener('error', onErr); resolve(e.data); };
       const onErr = () => { w.removeEventListener('message', on); w.removeEventListener('error', onErr); SC.worker = null; fallback(); };
       w.addEventListener('message', on); w.addEventListener('error', onErr);
       const copy = img.gray.slice();                       // orijinali (elle köşe vb. için) bozmamak için kopya aktarılır
@@ -216,15 +167,15 @@ async function makeRecords(file, out, tpl, cfgBooklets) {
 /* ---------------------------------------------------------------- ana görünüm */
 App.views.scan = function (root) {
   const S = App.state;
-  const open = S.exams.filter(e => e.status === 'open');
+  const open = S.exams.filter(canScanExam);
   if (!SC.examId || !examById(SC.examId)) SC.examId = Settings.get('scanExam', '') && examById(Settings.get('scanExam', '')) ? Settings.get('scanExam', '') : (open[0] ? open[0].examId : '');
   const exSel = h('select', { id: 'sc-exam' }, open.length ? open.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}`)) : h('option', { value: '' }, '(açık sınav yok)'));
   const scSel = h('select', { id: 'sc-school' });
   const info = h('div'), listBox = h('div'), progBox = h('div');
-  const fileIn = h('input', { type: 'file', accept: 'application/pdf,.pdf,image/*,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.heic,.heif,.avif', multiple: true, class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
-  const camIn = h('input', { type: 'file', accept: 'image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.avif', capture: 'environment', class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
+  const fileIn = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
+  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
   const drop = h('div', { class: 'drop', id: 'sc-drop' },
-    h('p', { style: { margin: '0 0 .6rem' } }, 'PDF veya görüntü dosyalarını (JPG, PNG, WEBP, BMP, TIFF, GIF, HEIC/HEIF, AVIF) buraya bırakın ya da seçin. Çok sayfalı PDF sayfa sayfa okunur; bazı biçimler tarayıcı desteğine bağlıdır.'),
+    h('p', { style: { margin: '0 0 .6rem' } }, 'Taranmış formları (PDF, JPG, PNG) buraya bırakın ya da seçin. Çok sayfalı PDF sayfa sayfa okunur.'),
     h('div', { class: 'row', style: { justifyContent: 'center' } },
       h('button', { class: 'btn primary', id: 'sc-live', onclick: () => openLive() }, '📷 Canlı kamera (otomatik okuma)'),
       h('button', { class: 'btn', id: 'sc-pick', onclick: () => fileIn.click() }, 'Dosya seç'),
@@ -237,7 +188,7 @@ App.views.scan = function (root) {
   async function selectExam(id) {
     SC.examId = id; Settings.set('scanExam', id);
     const ex = examById(id); clear(scSel); clear(info);
-    if (!ex) { info.append(h('div', { class: 'alert warn' }, 'Okutma için açık bir sınav yok. "Sınavlar" sayfasından sınav oluşturun veya yöneticinizden isteyin.')); drop.classList.add('hidden'); return; }
+    if (!ex) { info.append(h('div', { class: 'alert warn' }, S.user.role === 'ogretmen' ? 'Okutma için kendi sınavınız yok. "Sınavlar" sayfasından sınav oluşturun (okulunuzun ortak sınavlarını okul yöneticisi okutur).' : 'Okutma için açık bir sınav yok. "Sınavlar" sayfasından sınav oluşturun veya yöneticinizden isteyin.')); drop.classList.add('hidden'); return; }
     drop.classList.remove('hidden');
     const schools = S.schools.filter(s => examCovers(ex, s)); SC.auth = schools;
     SC.tplInfo = resolveTemplate(ex); const cfg = examCfg(ex), t = SC.tplInfo.tpl; SC.expect = t.kind === 'generated' ? t.formCode : null;
@@ -285,15 +236,12 @@ App.views.scan = function (root) {
     if (SC.busy) return toast('Önceki okutma sürüyor, bekleyin.', 'bad');
     const ex = examById(SC.examId); if (!ex) return toast('Önce sınav seçin.', 'bad');
     if (!SC.okulKodu) return toast('Önce okul seçin.', 'bad');
-    SC.busy = true; const src = [], skipped = [];
+    SC.busy = true; const src = [];
     for (const f of files) {
-      if (isPdfFile(f)) {
-        try { src.push(...(await pdfSources(f))); }
-        catch (e) { skipped.push(`${f.name}: PDF açılamadı (${e.message})`); }
-      } else if (isSupportedImageFile(f)) src.push(f);
-      else skipped.push(`${f.name}: desteklenmeyen dosya türü`);
+      if (/pdf/i.test(f.type) || /\.pdf$/i.test(f.name)) {
+        try { src.push(...(await pdfSources(f))); } catch (e) { toast(`${f.name}: PDF açılamadı (${e.message}). Bozuk ya da şifreli olabilir; JPG/PNG olarak da kaydedebilirsiniz.`, 'bad'); }
+      } else if (/^image\//.test(f.type) || /\.(jpe?g|png|webp|bmp)$/i.test(f.name)) src.push(f);
     }
-    if (skipped.length) toast(skipped.slice(0, 3).join(' · ') + (skipped.length > 3 ? ` · +${skipped.length - 3} dosya` : ''), 'bad');
     files = src; if (!files.length) { SC.busy = false; return; }
     for (let i = 0; i < files.length; i++) {
       clear(progBox).append(h('div', { class: 'card' }, h('div', { class: 'small muted' }, `Okunuyor: ${files[i].name} (${i + 1}/${files.length})`), h('div', { class: 'progress' }, h('div', { style: { width: (100 * i / files.length) + '%' } }))));
@@ -398,54 +346,15 @@ App.views.scan = function (root) {
 
     function draw() {
       const r = cur(); if (!r || !r.pv || !img.complete) return;
-      canvas.width = r.pv.w; canvas.height = r.pv.h; const cx = canvas.getContext('2d'); cx.drawImage(img, 0, 0); const s = r.pv.s, rad = tpl.r * s * 0.70;
-      cx.lineWidth = Math.max(1.5, rad * 0.13);
-      // Cevap anahtarı: seçili kitapçık; yoksa puanlama motoruyla aynı ilk-anahtar geri dönüşü.
-      const keyNames = Object.keys(cfg.keys || {});
-      const keyBooklet = (r.booklet && cfg.keys[r.booklet]) ? r.booklet : keyNames[0];
-      const answerKey = keyBooklet ? String(cfg.keys[keyBooklet] || '') : '';
-      const ring = (x, y, color, radius = rad, dashed = false) => {
-        cx.strokeStyle = color; cx.lineWidth = Math.max(1.5, rad * 0.13);
-        cx.setLineDash(dashed ? [Math.max(3, rad * .55), Math.max(2, rad * .35)] : []);
-        cx.beginPath(); cx.arc(x * s, y * s, radius, 0, Math.PI * 2); cx.stroke();
-        cx.setLineDash([]);
-      };
+      canvas.width = r.pv.w; canvas.height = r.pv.h; const cx = canvas.getContext('2d'); cx.drawImage(img, 0, 0); const s = r.pv.s, rad = tpl.r * s * 1.12;
+      cx.lineWidth = Math.max(2, rad * 0.22);
       for (let q = 1; q <= cfg.total; q++) {
-        const p = qpos[q]; if (!p) continue;
-        const a = r.answers[q - 1] || '-', fl = r.flags.find(f => f.q === q), ed = r.edits[q];
-        const k = answerKey[q - 1] || '';
-        if (q === activeQ) {
-          cx.fillStyle = 'rgba(255,214,0,.20)';
-          cx.fillRect((p.xs[0] - tpl.r * 2.2) * s, (p.y - tpl.r * 1.5) * s,
-            (p.xs[p.xs.length - 1] - p.xs[0] + tpl.r * 4.4) * s, tpl.r * 3 * s);
-        }
-
-        // Boş soru: seçeneklerin çevresi gri kesikli; doğru seçenek ayrıca sarı.
-        if (a === '-') {
-          p.xs.forEach(x => ring(x, p.y, '#9299a3', rad * .92, true));
-          if (p.labels.includes(k)) ring(p.xs[p.labels.indexOf(k)], p.y, '#f2c300', rad * 1.28);
-          if (fl && fl.type === 'weak') p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.48, true));
-          continue;
-        }
-
-        // Çoklu işaret: OMR sonucu '*' olduğundan tek tek hangi kalem izinin seçildiğini
-        // kesinleştirmeden tüm satır turuncu gösterilir; cevap anahtarı sarı kalır.
-        if (a === '*') {
-          p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.05));
-          if (p.labels.includes(k)) ring(p.xs[p.labels.indexOf(k)], p.y, '#f2c300', rad * 1.42);
-          continue;
-        }
-
-        const j = p.labels.indexOf(a), kj = p.labels.indexOf(k);
-        if (kj >= 0) ring(p.xs[kj], p.y, '#f2c300', rad * 1.30);
-        if (j >= 0) {
-          if (ed) ring(p.xs[j], p.y, '#2d6df6', rad * .88);
-          else if (fl) ring(p.xs[j], p.y, '#f08a24', rad * .98);
-          else if (a === k) ring(p.xs[j], p.y, '#16a34a', rad * .88);
-          else ring(p.xs[j], p.y, '#dc2626', rad * .98);
-        } else if (fl && fl.type === 'weak') {
-          p.xs.forEach(x => ring(x, p.y, '#f08a24', rad * 1.05, true));
-        }
+        const p = qpos[q]; if (!p) continue; const a = r.answers[q - 1], fl = r.flags.find(f => f.q === q), ed = r.edits[q];
+        if (q === activeQ) { cx.fillStyle = 'rgba(255,214,0,.28)'; cx.fillRect((p.xs[0] - tpl.r * 2.2) * s, (p.y - tpl.r * 1.5) * s, (p.xs[p.xs.length - 1] - p.xs[0] + tpl.r * 4.4) * s, tpl.r * 3 * s); }
+        if (a === '*') { cx.strokeStyle = '#ff7a00'; p.xs.forEach(x => { cx.beginPath(); cx.arc(x * s, p.y * s, rad, 0, 7); cx.stroke(); }); continue; }
+        const j = p.labels.indexOf(a);
+        if (j >= 0) { cx.strokeStyle = ed ? '#2d6df6' : (fl ? '#ff7a00' : '#16a34a'); cx.beginPath(); cx.arc(p.xs[j] * s, p.y * s, rad, 0, 7); cx.stroke(); }
+        else if (fl && fl.type === 'weak') { cx.strokeStyle = '#ff7a00'; cx.setLineDash([4, 4]); p.xs.forEach(x => { cx.beginPath(); cx.arc(x * s, p.y * s, rad, 0, 7); cx.stroke(); }); cx.setLineDash([]); }
       }
       ['studentNo', 'schoolCode'].forEach(role => {
         const gno = tpl.groups.find(g => g.role === role), rg = r.groups.find(g => g.role === role); if (!gno || !rg) return;
@@ -515,7 +424,7 @@ App.views.scan = function (root) {
       const v = visible(), nxt = v.find(i => i > idx && SC.forms[i].status !== 'saved'); evalAll(); renderList();
       if (nxt !== undefined) { idx = nxt; activeQ = 1; paintAll(); } else { dlg.close(); if (Settings.get('autoSync', true) && App.state.online) App.syncQueue(); }
     };
-    body.append(h('div', { class: 'review' }, h('div', null, wrap, h('p', { class: 'small muted' }, 'Sarı: cevap anahtarı · Yeşil: doğru işaret · Kırmızı: yanlış işaret · Gri kesikli: boş · Turuncu: çoklu/belirsiz · Mavi: sizin düzeltmeniz. Büyütmek için görüntüye dokunun.')),
+    body.append(h('div', { class: 'review' }, h('div', null, wrap, h('p', { class: 'small muted' }, 'Yeşil: okunan işaret · Turuncu: şüpheli · Mavi: sizin düzeltmeniz. Büyütmek için görüntüye dokunun.')),
       h('div', null, fields, h('div', { class: 'row between', style: { margin: '.6rem 0 .3rem' } }, h('b', null, 'Cevaplar'), h('label', { class: 'small row' }, h('input', { type: 'checkbox', onchange: e => { onlyFlags = e.target.checked; paintGrid(); } }), 'yalnız sorunlular')),
         grid, h('p', { class: 'small muted' }, 'Hücreye dokununca cevap döner (· → A → B …). Klavye: ', h('span', { class: 'kb' }, 'A–E'), ' cevap, ', h('span', { class: 'kb' }, 'Boşluk'), ' boş, ', h('span', { class: 'kb' }, '← →'), ' soru değiştir.'), sumBox)));
     const onKey = e => {

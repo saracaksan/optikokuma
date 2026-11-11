@@ -54,7 +54,7 @@ main { grid-row: 2; padding: 1rem; max-width: 1180px; width: 100%; min-width: 0;
 .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; } .row.end { justify-content: flex-end; } .row.between { justify-content: space-between; } .grow { flex: 1 1 auto; }
 .grid { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .field { display: flex; flex-direction: column; gap: .25rem; } .field > label, .lbl { font-size: .8rem; font-weight: 600; color: var(--muted); }
-input[type=text], input[type=password], input[type=number], input[type=url], input[type=date], input[type=search], select, textarea {
+input[type=text], input[type=tel], input[type=email], input[type=password], input[type=number], input[type=url], input[type=date], input[type=search], select, textarea {
   width: 100%; padding: .55rem .65rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card); min-height: 40px;
 }
 input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
@@ -199,3 +199,26 @@ body.cam-open { overflow: hidden; }
 .qc.d { background: var(--ok-soft); border-color: var(--ok); } .qc.y { background: var(--bad-soft); border-color: var(--bad); } .qc.m { background: var(--warn-soft); border-color: var(--warn); } .qc.b b { color: var(--muted); font-weight: 400; }
 .cam-multi { display: flex; gap: .35rem; flex-wrap: wrap; margin: .3rem 0; } .cam-acts { margin-top: .5rem; }
 @media (prefers-reduced-motion: reduce) { .cam-bar i, .cam-flash { transition: none; } }
+
+/* Yatay telefon: ipucu üst orta şeritte, kontroller sağ kenarda — formun üstünü kapatmasın */
+@media (orientation: landscape) and (max-height: 560px) {
+  .cam-mid { top: calc(8px + env(safe-area-inset-top)); left: 4.2rem; right: 4.2rem; flex-direction: row; justify-content: center; align-items: center; flex-wrap: wrap; gap: .5rem; }
+  .cam-hint { font-size: 1rem; padding: .35rem .8rem; }
+  .cam-hint-ic { font-size: 1.15rem; }
+  .cam-sub { display: none; }
+  .cam-top { right: auto; background: none; }
+  .cam-title { display: none; }
+  .cam-bottom { left: auto; top: 0; right: 0; width: 6.6rem; flex-direction: column; justify-content: center; gap: .9rem; padding: .6rem .6rem; background: linear-gradient(90deg, transparent, #000b); }
+  .cam-auto { font-size: .7rem; max-width: 5.4rem; text-align: center; flex-direction: column; }
+  .cam-stat { font-size: .7rem; text-align: center; }
+}
+
+/* ---- herkese açık üyelik sayfası (#/kayit) ve başvurular */
+.reg { max-width: 640px; margin: 4vh auto; padding: 0 1rem 2rem; } .reg .card { padding: 1.2rem; } .reg h1 { text-align: center; margin-bottom: .2rem; }
+.reg .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.reg .steps { display: flex; gap: .4rem; flex-wrap: wrap; margin: .2rem 0 .8rem; }
+.reg textarea { min-height: 4.2rem; }
+.app-card { border: 1px solid var(--line); border-radius: 10px; padding: .8rem .9rem; margin-bottom: .7rem; background: var(--card, transparent); }
+.app-card .kv { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-size: .9rem; margin: .5rem 0; } .app-card .kv dt { color: var(--muted); } .app-card .kv dd { margin: 0; word-break: break-word; }
+.linkbox { display: flex; gap: .4rem; align-items: center; } .linkbox input { flex: 1; min-width: 0; }
+pre.cfg { background: var(--soft); padding: .6rem .8rem; border-radius: 8px; overflow-x: auto; font-size: .82rem; margin: .4rem 0; }

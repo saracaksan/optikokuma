@@ -1,7 +1,7 @@
 /* app.js — çekirdek: arayüz yardımcıları, yerel veri (IndexedDB), API istemcisi, kabuk, giriş, ayarlar */
 'use strict';
 
-const App = { state: { user: null, token: '', exams: [], schools: [], templates: [], online: navigator.onLine, view: 'scan' }, views: {}, hooks: {} };
+const App = { state: { user: null, token: '', exams: [], schools: [], templates: [], online: navigator.onLine, view: 'scan', pending: 0 }, views: {}, hooks: {} };
 
 /* ------------------------------------------------------------------ yardımcılar */
 // Element.append: null/false değerleri atlar, iç içe dizileri düzleştirir ("null" metni oluşmasın diye)
@@ -131,8 +131,10 @@ const DB = {
 function isNetErr(e) { return e instanceof TypeError || (e && (e.name === 'AbortError' || e.code === 'NET')); }
 function setOnline(v) { if (App.state.online !== v) { App.state.online = v; App.updateTopbar && App.updateTopbar(); if (v && App.hooks.onOnline) App.hooks.onOnline(); } }
 
+/** Sunucu adresi: kullanıcının girdiği; yoksa config.js'te yöneticinin tanımladığı. */
+const getApiUrl = () => Settings.get('apiUrl', '') || String((window.OPTIK_CONFIG && window.OPTIK_CONFIG.apiUrl) || '');
 async function api(action, params, opt) {
-  const url = Settings.get('apiUrl', '');
+  const url = getApiUrl();
   if (!url) { const e = new Error('Sunucu adresi (Apps Script /exec) girilmemiş. Ayarlar sayfasından ekleyin.'); e.code = 'NOURL'; throw e; }
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), (opt && opt.timeout) || 90000);
   let res;
@@ -192,14 +194,17 @@ function examFormCode(ex) { try { const t = resolveTemplate(ex).tpl; return t.ki
 /* ------------------------------------------------------------------ kabuk */
 const NAV = [
   { id: 'scan', label: 'Okut', roles: null }, { id: 'queue', label: 'Kuyruk', roles: null }, { id: 'results', label: 'Sonuçlar', roles: null },
-  { id: 'exams', label: 'Sınavlar', roles: null }, { id: 'forms', label: 'Formlar', roles: null }, { id: 'admin', label: 'Yönetim', roles: ['admin', 'il', 'ilce'] }, { id: 'settings', label: 'Ayarlar', roles: null }
+  { id: 'exams', label: 'Sınavlar', roles: null }, { id: 'forms', label: 'Formlar', roles: null }, { id: 'admin', label: 'Yönetim', roles: ['admin', 'il', 'ilce', 'okul'] }, { id: 'settings', label: 'Ayarlar', roles: null }
 ];
-const ROLE_LABEL = { admin: 'Yönetici', il: 'İl yetkilisi', ilce: 'İlçe yetkilisi', okul: 'Okul' };
+const ROLE_LABEL = { admin: 'Yönetici', il: 'İl yetkilisi', ilce: 'İlçe yetkilisi', okul: 'Okul yöneticisi', ogretmen: 'Öğretmen' };
+/** Bu sınava okutma yapılabilir mi (sunucu aynı kuralı uygular): öğretmen yalnızca kendi sınavına; kişisel sınava yalnızca sahibi. */
+const canScanExam = e => e.status === 'open' && e.canScan !== false;
 
 App.updateTopbar = function () {
   const tb = $('#tb-status'); if (!tb) return;
   tb.className = 'pill ' + (App.state.online ? '' : 'warn'); tb.textContent = App.state.online ? 'Çevrimiçi' : 'Çevrimdışı';
   const b = $('#nav-badge'); if (b && App.queueCount !== undefined) { b.textContent = App.queueCount; b.classList.toggle('hidden', !App.queueCount); }
+  const pb = $('#admin-badge'); if (pb) { pb.textContent = App.state.pending || 0; pb.classList.toggle('hidden', !App.state.pending); }
 };
 
 App.go = function (view) {
@@ -217,7 +222,7 @@ App.renderShell = function () {
   app.append(h('div', { class: 'shell' },
     h('div', { class: 'topbar' }, h('span', { class: 'title' }, 'Optik Okuma Sistemi'), h('span', { id: 'tb-status', class: 'pill' }, ''),
       h('div', { class: 'who' }, h('div', null, u.name || u.username), h('div', { class: 'small' }, ROLE_LABEL[u.role] || u.role))),
-    h('nav', { class: 'nav', 'aria-label': 'Ana menü' }, items.map(n => h('button', { 'data-id': n.id, onclick: () => App.go(n.id) }, icon(n.id), h('span', null, n.label), n.id === 'queue' ? h('span', { id: 'nav-badge', class: 'badge hidden' }, '0') : null))),
+    h('nav', { class: 'nav', 'aria-label': 'Ana menü' }, items.map(n => h('button', { 'data-id': n.id, onclick: () => App.go(n.id) }, icon(n.id), h('span', null, n.label), n.id === 'queue' ? h('span', { id: 'nav-badge', class: 'badge hidden' }, '0') : null, n.id === 'admin' ? h('span', { id: 'admin-badge', class: 'badge hidden', title: 'Onay bekleyen başvuru' }, '0') : null))),
     h('main', { id: 'main' })));
   App.updateTopbar(); if (App.refreshQueueCount) App.refreshQueueCount();
 };
@@ -232,7 +237,8 @@ App.sessionExpired = function (msg) {
 /* ------------------------------------------------------------------ giriş */
 App.renderLogin = function (msg) {
   const app = clear($('#app'));
-  const url = h('input', { type: 'url', id: 'f-url', placeholder: 'https://script.google.com/macros/s/…/exec', value: Settings.get('apiUrl', ''), autocomplete: 'off' });
+  const cfgUrl = String((window.OPTIK_CONFIG && window.OPTIK_CONFIG.apiUrl) || '');
+  const url = h('input', { type: 'url', id: 'f-url', placeholder: 'https://script.google.com/macros/s/…/exec', value: getApiUrl(), autocomplete: 'off' });
   const un = h('input', { type: 'text', id: 'f-user', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', value: Settings.get('lastUser', '') });
   const pw = h('input', { type: 'password', id: 'f-pass', autocomplete: 'current-password' });
   const err = h('div', { class: 'alert bad hidden', id: 'f-err' });
@@ -241,24 +247,25 @@ App.renderLogin = function (msg) {
     ev.preventDefault(); err.classList.add('hidden'); btn.disabled = true; btn.textContent = 'Giriş yapılıyor…';
     try {
       const u = url.value.trim(); if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(u) && !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(u)) throw new Error('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı.');
-      Settings.set('apiUrl', u);
+      Settings.set('apiUrl', u === cfgUrl ? '' : u);   // yöneticinin config.js adresiyle aynıysa ayrıca saklanmaz (adres sonradan değişirse kendiliğinden güncellenir)
       const d = await api('login', { username: un.value.trim(), password: pw.value }, { noAuthRedirect: true });
       App.state.token = d.token; App.state.user = d.user; Settings.set('token', d.token); Settings.set('lastUser', un.value.trim()); await DB.put('kv', d.user, 'user');
       await App.start();
     } catch (e) { err.textContent = isNetErr(e) ? 'Sunucuya ulaşılamadı. İnternet bağlantısını ve adresi kontrol edin.' : e.message; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Giriş yap'; }
   } },
-    h('div', { class: 'field' }, h('label', { for: 'f-url' }, 'Sunucu adresi (Apps Script)'), url),
+    cfgUrl && getApiUrl() === cfgUrl ? h('details', { class: 'small' }, h('summary', null, 'Sunucu adresi (yöneticiniz tanımladı)'), h('div', { class: 'field', style: { marginTop: '.4rem' } }, url)) : h('div', { class: 'field' }, h('label', { for: 'f-url' }, 'Sunucu adresi (Apps Script)'), url),
     h('div', { class: 'field', style: { marginTop: '.7rem' } }, h('label', { for: 'f-user' }, 'Kullanıcı adı'), un),
     h('div', { class: 'field', style: { margin: '.7rem 0' } }, h('label', { for: 'f-pass' }, 'Parola'), pw), err, btn);
   app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, 'Optik Okuma Sistemi'),
     msg ? h('div', { class: 'alert warn' }, msg) : null, h('div', { class: 'card' }, form),
+    h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kayit', id: 'f-register' }, 'Üye ol: öğretmen veya okul kaydı')),
     h('p', { class: 'muted small center' }, 'Okul, ilçe ve il bazlı optik okuma, puanlama ve karşılaştırma.')));
 };
 
 /* ------------------------------------------------------------------ ayarlar */
 App.views.settings = function (root) {
   const S = App.state, u = S.user;
-  const url = h('input', { type: 'url', value: Settings.get('apiUrl', '') });
+  const url = h('input', { type: 'url', value: getApiUrl() });
   const auto = h('input', { type: 'checkbox', checked: Settings.get('autoSync', true), onchange: e => { Settings.set('autoSync', e.target.checked); if (e.target.checked && App.syncQueue) App.syncQueue(); } });
   const strict = h('input', { type: 'checkbox', checked: Settings.get('strictFlags', true), onchange: e => Settings.set('strictFlags', e.target.checked) });
   const ft = h('input', { type: 'text', maxlength: 60, value: formFooter(), placeholder: DEFAULT_FOOTER });
@@ -266,7 +273,7 @@ App.views.settings = function (root) {
   root.append(
     h('h1', null, 'Ayarlar'),
     h('div', { class: 'card' }, h('h2', null, 'Hesap'),
-      h('p', null, h('b', null, u.name || u.username), ' · ', ROLE_LABEL[u.role] || u.role, u.role === 'okul' ? ` · okul kodu ${u.okulKodu}` : u.role === 'ilce' ? ` · ${u.ilce}/${u.il}` : u.role === 'il' ? ` · ${u.il}` : ''),
+      h('p', null, h('b', null, u.name || u.username), ' · ', ROLE_LABEL[u.role] || u.role, (u.role === 'okul' || u.role === 'ogretmen') ? ` · ${(schoolByCode(u.okulKodu) || {}).okulAdi || 'okul kodu ' + u.okulKodu}` : u.role === 'ilce' ? ` · ${u.ilce}/${u.il}` : u.role === 'il' ? ` · ${u.il}` : ''),
       h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: async () => { try { await refreshBase(); toast('Veriler yenilendi', 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Verileri yenile'),
         h('button', { class: 'btn danger', onclick: async () => {
@@ -280,6 +287,7 @@ App.views.settings = function (root) {
       h('label', { class: 'row', style: { margin: '.2rem 0 .7rem' } }, strict, 'Zayıf / silinmiş işaretleri de "kontrol gerekli" say (önerilir)'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => { Settings.set('apiUrl', url.value.trim()); toast('Kaydedildi', 'ok'); } }, 'Adresi kaydet'),
         h('button', { class: 'btn', onclick: async () => { try { Settings.set('apiUrl', url.value.trim()); const t0 = Date.now(); await api('me'); toast(`Bağlantı tamam (${Date.now() - t0} ms)`, 'ok'); } catch (e) { toast(e.message, 'bad'); } } }, 'Bağlantıyı dene'))),
+    u.role === 'ogretmen' ? h('div', { class: 'card' }, h('h2', null, 'Öğretmen hesabı'), h('p', { class: 'small muted', style: { margin: 0 } }, 'Oluşturduğunuz sınavlar ve sonuçları yalnızca siz ve okul yöneticiniz görür; aynı okuldaki diğer öğretmenler ve ilçe/il yetkilileri göremez. Okulunuzun ortak (kurumsal) sınavlarını yalnızca görüntülersiniz; okutmayı okul yöneticisi yapar.')) : null,
     h('div', { class: 'card' }, h('h2', null, 'Form görünümü'),
       h('div', { class: 'field' }, h('label', null, 'Basılan formların altındaki küçük yazı'), ft),
       h('p', { class: 'small muted' }, 'Boş bırakırsanız yazı basılmaz. Form kimlik kodu (sağ alttaki siyah kareler) her zaman basılır; sistem hangi formun okutulduğunu bu koddan tanır.'),

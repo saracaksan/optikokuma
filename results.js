@@ -26,7 +26,7 @@ async function loadResults(examId, force) {
 App.views.results = function (root) {
   const S = App.state, exams = S.exams;
   if (!RS.examId || !examById(RS.examId)) RS.examId = (Settings.get('resExam', '') && examById(Settings.get('resExam', ''))) ? Settings.get('resExam', '') : (exams[0] ? exams[0].examId : '');
-  const exSel = h('select', { id: 'rs-exam' }, exams.length ? exams.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}`)) : h('option', { value: '' }, '(sınav yok)'));
+  const exSel = h('select', { id: 'rs-exam' }, exams.length ? exams.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}${e.personal && e.owner !== S.user.username ? ' · ' + (e.ownerName || e.owner) : ''}`)) : h('option', { value: '' }, '(sınav yok)'));
   const body = h('div');
   root.append(h('div', { class: 'row between' }, h('h1', null, 'Sonuçlar'), h('div', { class: 'row' }, exSel, h('button', { class: 'btn', onclick: () => load(true) }, '↻ Yenile'))), body);
   if (RS.examId) exSel.value = RS.examId;
