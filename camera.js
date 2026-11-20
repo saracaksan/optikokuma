@@ -27,6 +27,7 @@ const Camera = (function () {
   }
 
   function open(ctx) {
+    if (ctx.tpl && (ctx.tpl.frameKind === 'sides' || ctx.tpl.frameKind === 'track')) return toast('Bu form köşe karesi içermiyor (yan çizgili form); canlı kamera yalnızca köşe karesi olan formlarda çalışır. "Fotoğraf çek" ya da dosya yükleme kullanın.', 'bad', 8000);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast('Bu tarayıcıda kamera kullanılamıyor (güvenli bağlantı — https — gerekir).', 'bad');
     const tpl = ctx.tpl, cfg = ctx.cfg, ASP = aspectsOf(tpl), QL = labelsOf(tpl);
     const S = {

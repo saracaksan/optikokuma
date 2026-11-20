@@ -6,9 +6,12 @@
 App.renderPortal = function () {
   const app = clear($('#app'));
   let hashCode = ''; try { hashCode = decodeURIComponent((location.hash.match(/^#\/ogrenci\/([^/?#]+)/) || [])[1] || ''); } catch (e) { }
-  const S = { places: null, schools: [], school: null, classes: [], needCode: false, data: null, sel: 0, timer: null, gen: 0 };
+  /* Veliye giden WhatsApp mesajındaki bağlantı: #/ogrenci/<okulKodu>?n=<okul no>&s=<sınıf> → sınıf ve numara hazır gelir, yalnızca veli kodu yazılır.
+   * Veli kodu bağlantıya KONMAZ (bağlantılar iletilir/önizlenir); kod mesajın metninde durur. */
+  const pre = (() => { try { const q = new URLSearchParams(location.hash.split('?')[1] || ''), n = (q.get('n') || '').trim(); return { n: /^[0-9A-Za-z]{1,20}$/.test(n) ? n : '', s: (q.get('s') || '').trim().slice(0, 20) }; } catch (e) { return { n: '', s: '' }; } })();
+  const S = { places: null, schools: [], school: null, classes: [], needCode: !!pre.n, data: null, sel: 0, timer: null, gen: 0 };
   const root = h('div', { class: 'pt' });
-  app.append(root);
+  app.append(h('div', { class: 'pt-install' }, Install.card()), root);
 
   const f = (v, d) => (v == null || v === '' || isNaN(v)) ? '—' : nf(v, d == null ? 2 : d);
   const fd = (d) => /^\d{4}-\d{2}-\d{2}/.test(String(d || '')) ? String(d).slice(8, 10) + '.' + String(d).slice(5, 7) + '.' + String(d).slice(0, 4) : String(d || '');
@@ -64,6 +67,8 @@ App.renderPortal = function () {
       if (!S.classes.length) { classBox.append(h('div', { class: 'alert info' }, 'Bu okulda henüz öğrenci listesi yüklenmemiş. Okulunuzla iletişime geçin.')); return; }
       clear(sinif).append(h('option', { value: '' }, 'Sınıfı seçin…'), S.classes.map(c => h('option', { value: c }, c)));
       classBox.append(h('div', { class: 'grid' }, field('Sınıf', sinif), field('Okul numarası', no)), kodField);
+      if (pre.s) { const c = S.classes.find(x => trKeyLite(x) === trKeyLite(pre.s)); if (c) sinif.value = c; }
+      if (pre.n) { no.value = pre.n; if (sinif.value) setTimeout(() => { try { kod.focus(); } catch (e) { } }, 0); }
     }
 
     il.addEventListener('change', () => { Settings.set('portalIl', il.value); Settings.set('portalIlce', ''); Settings.set('portalOkul', ''); S.school = null; clear(classBox); fillIlce(); });
@@ -82,7 +87,9 @@ App.renderPortal = function () {
       try {
         const d = await api('portalLookup', { okulKodu: S.school.okulKodu, sinif: sinif.value, ogrNo: no.value.trim(), veliKodu: kod.value.trim(), website: $('#pt-website').value }, { noAuthRedirect: true });
         if (gen !== S.gen) return;
-        S.data = d; S.sel = 0; drawResult(); return;
+        S.data = d; S.sel = 0;
+        if (pre.n || pre.s) { pre.n = pre.s = ''; try { history.replaceState(null, '', location.hash.split('?')[0]); } catch (e) { } }   // numara adres çubuğunda kalmasın
+        drawResult(); return;
       } catch (e) {
         if (gen !== S.gen) return;
         if (e.code === 'VELIKODU') { S.needCode = true; kodField.hidden = false; showErr(e.message); kod.focus(); }

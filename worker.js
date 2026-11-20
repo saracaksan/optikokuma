@@ -1,10 +1,10 @@
 /* Okuma işçisi: görüntü işleme arayüzü dondurmadan arka planda çalışır. */
-importScripts('omr-core.js');
+importScripts('omr-core.js', 'omr-detect.js');
 onmessage = function (e) {
   var d = e.data;
   try {
     var img = { gray: new Uint8Array(d.gray), w: d.w, h: d.h };
-    var res = OMR.readPage(img, d.tpl, d.opts || {});
+    var res = d.tpl && d.tpl.auto ? OMRDetect.readAuto(img, d.tpl, d.opts || {}) : OMR.readPage(img, d.tpl, d.opts || {});   // otomatik tanınan harici formlar: yön/köşe önce şablonla eşleştirilir
     var previews = [], frame = d.tpl.frame;
     if (res.ok) {
       var s = Math.min(8, 1500 / Math.max(frame.w, frame.h));

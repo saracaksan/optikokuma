@@ -49,15 +49,32 @@ App.views.exams = function (root) {
     const cfg0 = Scoring.normalizeCfg(c0);
     let sections = cfg0.sections.map(s => Object.assign({}, s));
     const keys = Object.assign({}, cfg0.keys); let booklets = (c0.booklets && c0.booklets.length ? c0.booklets : Object.keys(keys).length ? Object.keys(keys) : ['A']).slice();
-    const name = h('input', { type: 'text', value: ex ? ex.name : '', placeholder: 'Örn: 8. Sınıf LGS Deneme 3' }), date = h('input', { type: 'date', value: ex ? ex.date : today() });
+    const name = h('input', { type: 'text', id: 'ex-name', value: ex ? ex.name : '', placeholder: 'Örn: 8. Sınıf LGS Deneme 3' }), date = h('input', { type: 'date', value: ex ? ex.date : today() });
     const scopes = scopeOptions(), scopeSel = h('select', null, scopes.map((o, i) => h('option', { value: i }, o[2])));
     if (ex) { const i = scopes.findIndex(o => o[0] === ex.scopeType && o[1] === String(ex.scopeValue)); if (i >= 0) scopeSel.value = i; }
     else if ((u.role === 'okul' || u.role === 'ogretmen') && scopes.length) scopeSel.value = 0;
     if (u.role === 'okul' || u.role === 'ogretmen' || (ex && ex.personal)) scopeSel.disabled = true;
+    // Kapsam: il / ilçe / düzey süzgeçleri ortak seçimle gelir (diğer ekranlarla aynı); yeni sınavda kapsam seçili okul → ilçe → il'e göre başlar
+    let scopeBox = scopeSel;
+    if (!scopeSel.disabled && S.schools.length > 1) {
+      const hint = h('div', { class: 'small muted', id: 'ex-scope-hint' });
+      const g = Sel.v; let want = -1;
+      if (!ex) { if (g.okul) want = scopes.findIndex(o => o[0] === 'okul' && o[1] === g.okul); if (want < 0 && g.ilce) want = scopes.findIndex(o => o[0] === 'ilce' && (g.il ? o[1] === g.il + '|' + g.ilce : o[1].split('|')[1] === g.ilce)); if (want < 0 && g.il) want = scopes.findIndex(o => o[0] === 'il' && o[1] === g.il); }
+      if (want >= 0) { scopeSel.value = want; hint.textContent = 'Kapsam, seçili ' + scopes[want][2].replace(/^(Okul|İlçe|İl): /, m => m.toLowerCase()) + ' olarak ayarlandı; değiştirmek için listeden başka kapsam seçin.'; }
+      const fillScope = rows => {
+        const cur = scopeSel.value, codes = new Set(rows.map(s => String(s.okulKodu))), ils = new Set(rows.map(s => s.il)), ilces = new Set(rows.map(s => s.il + '|' + s.ilce));
+        clear(scopeSel).append(scopes.map((o, i) => [i, o]).filter(([, o]) => o[0] === 'genel' || (o[0] === 'il' && ils.has(o[1])) || (o[0] === 'ilce' && ilces.has(o[1])) || (o[0] === 'okul' && codes.has(o[1]))).map(([i, o]) => h('option', { value: i }, o[2])));
+        scopeSel.value = cur; if (scopeSel.value !== cur) scopeSel.selectedIndex = 0;
+      };
+      const bar = schoolFilterBar(S.schools, fillScope, { keep: want >= 0 && scopes[want][0] === 'okul' ? scopes[want][1] : '' });
+      if (want >= 0) scopeSel.value = want;
+      scopeSel.addEventListener('change', () => { const o = scopes[+scopeSel.value]; hint.textContent = ''; if (o && o[0] === 'okul') Sel.set({ okul: o[1] }); });
+      scopeBox = h('div', { class: 'sp' }, bar.any ? bar.el : null, scopeSel, hint);
+    }
     const preset = h('select', { onchange: () => { const e = Katalog.byId(preset.value); if (e) applyEntry(e, true); } },
       h('option', { value: '' }, 'Hazır sınav programı seç…'), Katalog.GROUPS.filter(g => g.id !== 'tek').map(g => h('optgroup', { label: g.label }, Katalog.ENTRIES.filter(e => e.group === g.id).map(e => h('option', { value: e.id }, e.name)))));
     function applyEntry(e, setForm) {
-      const c = Katalog.examConfig(e); sections = c.sections.map(x => Object.assign({}, x)); choices.value = c.choices;
+      const c = Katalog.examConfig(e); setSections(c.sections.map(x => Object.assign({}, x))); choices.value = c.choices;
       { const m = PENALTIES.find(p => Math.abs(parseFloat(p[0]) - c.penalty) < 1e-6); if (m) pen.value = m[0]; }
       methodSel.value = c.method; base.value = c.base; max.value = c.max; booklets = c.booklets.slice(); bkIn.value = booklets.join(',');
       if (setForm) { tplSel.value = 'std:' + e.id; stdNup.value = (init && init.nup) || 1; drawStd(); }
@@ -72,45 +89,100 @@ App.views.exams = function (root) {
     const secBox = h('div'), total = h('span', { class: 'chip' });
     function drawSections() {
       clear(secBox); const tbl = h('table', null, h('thead', null, h('tr', null, ['Bölüm / ders', 'Soru sayısı', 'Katsayı', ''].map(t => h('th', null, t)))), h('tbody', null, sections.map((s, i) => h('tr', null,
-        h('td', null, h('input', { type: 'text', value: s.name, oninput: e => { s.name = e.target.value; drawKeys(); } })), h('td', { style: { width: '110px' } }, h('input', { type: 'number', min: 1, value: s.count, oninput: e => { s.count = Math.max(1, parseInt(e.target.value) || 1); updTotal(); drawKeys(); } })),
-        h('td', { style: { width: '110px' } }, h('input', { type: 'number', step: 'any', value: s.coef, oninput: e => { s.coef = parseFloat(String(e.target.value).replace(',', '.')) || 0; } })), h('td', null, sections.length > 1 ? h('button', { class: 'btn sm ghost', onclick: () => { sections.splice(i, 1); drawSections(); drawKeys(); } }, '✕') : null)))));
-      secBox.append(h('div', { class: 'tablewrap', style: { maxHeight: 'none' } }, tbl), h('div', { class: 'row', style: { marginTop: '.5rem' } }, h('button', { class: 'btn sm', onclick: () => { sections.push({ name: 'Yeni ders', count: 10, coef: 1 }); drawSections(); drawKeys(); } }, '+ Bölüm ekle'), total)); updTotal();
+        h('td', null, h('input', { type: 'text', value: s.name, 'data-sec': i, oninput: e => { s.name = e.target.value; drawKeys(); refreshMap(); } })), h('td', { style: { width: '110px' } }, h('input', { type: 'number', min: 1, value: s.count, 'data-cnt': i, oninput: e => { s.count = Math.max(1, parseInt(e.target.value) || 1); updTotal(); drawKeys(); refreshMap(); } })),
+        h('td', { style: { width: '110px' } }, h('input', { type: 'number', step: 'any', value: s.coef, oninput: e => { s.coef = parseFloat(String(e.target.value).replace(',', '.')) || 0; } })), h('td', null, sections.length > 1 ? h('button', { class: 'btn sm ghost', onclick: () => { sections.splice(i, 1); drawSections(); drawKeys(); drawStd(); } }, '✕') : null)))));
+      secBox.append(h('div', { class: 'tablewrap', style: { maxHeight: 'none' } }, tbl), h('div', { class: 'row', style: { marginTop: '.5rem' } }, h('button', { class: 'btn sm', onclick: () => { sections.push({ name: 'Yeni ders', count: 10, coef: 1 }); drawSections(); drawKeys(); drawStd(); } }, '+ Bölüm ekle'), total)); updTotal();
     }
     const totalN = () => sections.reduce((a, s) => a + (s.count || 0), 0);
     function updTotal() { total.textContent = `Toplam ${totalN()} soru`; }
-    const bkIn = h('input', { type: 'text', value: booklets.join(','), placeholder: 'A,B', oninput: e => { booklets = Array.from(new Set(e.target.value.toUpperCase().split(/[^A-Z]+/).filter(Boolean))).slice(0, 6); if (!booklets.length) booklets = ['A']; drawKeys(); } });
+    const bkIn = h('input', { type: 'text', id: 'ex-booklets', value: booklets.join(','), placeholder: 'A,B', oninput: e => { booklets = Array.from(new Set(e.target.value.toUpperCase().split(/[^A-Z]+/).filter(Boolean))).slice(0, 6); if (!booklets.length) booklets = ['A']; drawKeys(); } });
     const keyBox = h('div');
     function normKey(t) { return String(t || '').toUpperCase().replace(/[^A-H*.]/g, ''); }   // boşluk, satır sonu, virgül vb. temizlenir
+    /* Cevap anahtarı DERS DERS tutulur (her bölümün kendi kutusu); kaydederken kitapçık başına tek diziye birleştirilir. */
+    function sliceKeys(flat) { let q = 0; sections.forEach(s => { s._k = s._k || {}; Object.keys(flat).forEach(b => { s._k[b] = String(flat[b] || '').slice(q, q + s.count); }); q += s.count; }); }
+    const flatKeys = () => { const o = {}; booklets.forEach(b => { o[b] = sections.map(s => (s._k && s._k[b]) || '').join(''); }); return o; };
+    function setSections(next) { const flat = flatKeys(); sections = next; sections.forEach(s => { s._k = {}; }); sliceKeys(flat); }
+    sliceKeys(keys);
+    { const fm = Array.isArray(c0.formMap) ? c0.formMap : []; sections.forEach((s, i) => { const m = fm[i]; if (m && m.l >= 0) s._l = m.l | 0; if (m && (m.s | 0) > 0) s._s = (m.s | 0) + 1; }); }
+    const keyOf = (s, b) => normKey(s._k && s._k[b]);
+    function keyProblems() {
+      const out = [], ok = 'ABCDEFGH'.slice(0, +choices.value || 5) + '*.';
+      booklets.forEach(b => sections.forEach(s => { const k = keyOf(s, b); if (k.length !== s.count) out.push(`${s.name || 'Bölüm'} (kitapçık ${b}): ${k.length}/${s.count} karakter`); else for (let i = 0; i < k.length; i++) if (ok.indexOf(k[i]) < 0) { out.push(`${s.name || 'Bölüm'} (kitapçık ${b}) ${i + 1}. soru: "${k[i]}" geçersiz`); break; } }));
+      return out;
+    }
     function drawKeys() {
-      clear(keyBox); let q = 1; const parts = sections.map(s => { const t = `${s.name}: ${q}–${q + s.count - 1}`; q += s.count; return t; });
-      keyBox.append(h('div', { class: 'small muted' }, 'Bölümler: ' + parts.join(' · ')));
+      clear(keyBox); sections.forEach(s => { s._k = s._k || {}; });
+      keyBox.append(h('div', { class: 'small muted' }, 'Cevap anahtarını her dersin kendi kutusuna girin (örn. ABCDABCDAB). İptal soru için *, tanımsız için nokta kullanılır. Derslerin soru sayısı formdaki soru sayısıyla aynı olmak zorunda değildir.'));
       booklets.forEach(b => {
-        const info = h('span', { class: 'small' }), ta = h('textarea', { rows: 3, spellcheck: 'false', placeholder: 'Örn: ABCDABCD… (Excel\'den kopyalanan sütun da olur). İptal soru için *' }, keys[b] || '');
-        const upd = () => { const k = normKey(ta.value); keys[b] = k; const n = totalN(), bad = k.length !== n; info.textContent = `${k.length} / ${n} karakter` + (bad ? (k.length < n ? ' — eksik' : ' — fazla') : ' ✓'); info.style.color = bad ? 'var(--bad)' : 'var(--ok)'; };
-        ta.addEventListener('input', upd); ta.addEventListener('blur', () => { ta.value = normKey(ta.value); upd(); }); upd();
-        keyBox.append(h('div', { class: 'field', style: { marginTop: '.6rem' } }, h('label', null, `Kitapçık ${b} cevap anahtarı `, info), ta));
+        const rows = [], infos = [];
+        sections.forEach((s, i) => {
+          const info = h('span', { class: 'keyinfo small' }), inp = h('input', { type: 'text', class: 'keyin', spellcheck: 'false', autocomplete: 'off', id: `ex-key-${b}-${i}`, 'data-b': b, 'data-i': i, placeholder: `${s.count} karakter`, value: keyOf(s, b) });
+          const upd = () => { const k = keyOf(s, b), bad = k.length !== s.count; info.textContent = `${k.length}/${s.count}` + (bad ? (k.length < s.count ? ' eksik' : ' fazla') : ' ✓'); info.style.color = bad ? 'var(--bad)' : 'var(--ok)'; };
+          inp.addEventListener('input', () => { s._k[b] = inp.value.toUpperCase(); upd(); }); inp.addEventListener('blur', () => { inp.value = s._k[b] = keyOf(s, b); upd(); }); upd(); infos.push({ inp, upd });
+          rows.push(h('div', { class: 'keyrow' }, h('label', { for: inp.id }, h('b', null, s.name || `Bölüm ${i + 1}`), h('span', { class: 'small muted' }, ` · ${s.count} soru`)), inp, info));
+        });
+        const all = h('textarea', { rows: 2, spellcheck: 'false', id: `ex-keyall-${b}`, placeholder: 'Tüm anahtarı tek seferde yapıştırın: art arda harfler (dersler sırayla bölünür) ya da her ders ayrı satırda.' });
+        all.addEventListener('input', () => {
+          const lines = String(all.value).split(/\r?\n/).filter(l => l.trim()); let parts;
+          if (lines.length === sections.length && lines.length > 1) parts = lines.map(normKey); else { const flat = normKey(all.value); let q = 0; parts = sections.map(s => { const t = flat.slice(q, q + s.count); q += s.count; return t; }); }
+          sections.forEach((s, i) => { s._k[b] = parts[i] || ''; infos[i].inp.value = s._k[b]; infos[i].upd(); });
+        });
+        keyBox.append(h('div', { class: 'keycard' }, h('div', { class: 'keyhead' }, h('b', null, `Kitapçık ${b} cevap anahtarı`)), ...rows, h('details', { class: 'keyall' }, h('summary', { class: 'small' }, 'Hepsini tek seferde yapıştır'), all)));
       });
     }
     const curId = (ex && ex.config.templateId) || '', curStd = Katalog.parseStd(curId);
     const stdEntries = Katalog.ENTRIES.slice(); if (curStd && !stdEntries.find(e => e.id === curStd.entry.id)) stdEntries.push(curStd.entry);
-    const tplSel = h('select', { onchange: () => drawStd() }, h('option', { value: '' }, 'Otomatik (1/sayfa, 8 haneli öğrenci no)'),
+    const tplSel = h('select', { id: 'ex-tpl', onchange: () => drawStd() }, h('option', { value: '' }, 'Otomatik (1/sayfa, 8 haneli öğrenci no)'),
       S.templates.length ? h('optgroup', { label: 'Kayıtlı şablonlarım' }, S.templates.map(t => h('option', { value: t.templateId }, t.name + (t.json && t.json.kind === 'custom' ? ' (harici form)' : '')))) : null,
       Katalog.GROUPS.map(g => h('optgroup', { label: 'Hazır form · ' + g.label }, stdEntries.filter(e => e.group === g.id).map(e => h('option', { value: 'std:' + e.id }, e.name)))));
     const stdNup = h('select', { onchange: () => drawStd() }, [1, 2, 4, 6, 8].map(n => h('option', { value: n }, NUP_LABELS[n]))), stdD = h('select', null, [0, 4, 5, 6, 7, 8, 9, 10, 12].map(n => h('option', { value: n }, n ? `${n} haneli öğrenci no` : 'Öğrenci no yok'))), stdSd = h('select', null, [0, 3, 4, 5, 6, 7, 8, 9, 10].map(n => h('option', { value: n }, n ? `${n} haneli kurum kodu` : 'Kurum kodu yok'))), stdBox = h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sayfaya sığdırma'), stdNup), h('div', { class: 'field' }, h('label', null, 'Öğrenci no'), stdD), h('div', { class: 'field' }, h('label', null, 'Kurum kodu'), stdSd)), stdInfo = h('div', { class: 'small muted' });
     stdD.value = 8; stdSd.value = 0;
     if (curStd) { tplSel.value = 'std:' + curStd.entry.id; stdNup.value = curStd.nup; stdD.value = curStd.d; stdSd.value = curStd.sd; } else tplSel.value = curId;
+    const tplOf = () => { const t = S.templates.find(x => x.templateId === tplSel.value); return t && t.json && t.json.kind === 'custom' && Array.isArray(t.json.lessons) ? t : null; };
+    function applyTplLessons() {
+      const t = tplOf(); if (!t) return; const j = t.json;
+      setSections(j.lessons.map(l => ({ name: l.name, count: l.count, coef: 1 }))); if (j.choices >= 2 && j.choices <= 6) choices.value = j.choices;
+      if (j.booklets && j.booklets.length) { booklets = j.booklets.slice(); bkIn.value = booklets.join(','); } drawSections(); drawKeys(); drawStd();
+    }
+    /* ---- sınav bölümleri ↔ formdaki ders blokları (formda 20'şer soru, sınavda farklı sayılar) ---- */
+    const mapBox = h('div', { id: 'ex-map', class: 'exmap' }); let mapCells = [], mapSum = null;
+    const mapSpec = () => sections.map(s => ({ l: s._l >= 0 ? s._l : -1, s: Math.max(0, (s._s | 0) - 1) }));
+    const hasManualMap = () => sections.some(s => s._l >= 0 || (s._s | 0) > 1);
+    function refreshMap() {
+      const t = tplOf(); if (!t || !mapSum || !window.OMRDetect) return; const j = t.json, fs = OMRDetect.formSlots(sections, j.lessons, mapSpec());
+      fs.plan.forEach((p, i) => { const c = mapCells[i]; if (!c) return; c.textContent = p.lesson >= 0 ? `${p.lessonName || 'form'} ${p.from}–${p.to}. soru` + (p.spill ? ' (bloğun sonunu aşar, sonraki bloğa taşar)' : '') + (p.shifted ? ' · önceki dersin ardından' : '') + (p.explicit ? ' · elle' : '') : `form satırı ${p.start + 1}–${p.end}`; c.style.color = ''; });
+      clear(mapSum); mapSum.append(`Formda ${fs.formTotal} soru satırı var; sınavda ${fs.total} soru okunur, ${fs.unused} satır yok sayılır.`);
+      if (fs.problems.length) mapSum.append(h('div', { class: 'alert bad small', id: 'ex-map-err' }, fs.problems.join(' ')));
+    }
+    function drawMap() {
+      clear(mapBox); mapCells = []; mapSum = null; const t = tplOf(); if (!t) return; const j = t.json;
+      const rows = sections.map((s, i) => {
+        const sel = h('select', { id: `ex-map-l-${i}`, onchange: e => { s._l = +e.target.value; if (s._l < 0) { s._s = 1; st.value = 1; } refreshMap(); } }, h('option', { value: -1 }, 'Otomatik (adı/sırası)'), j.lessons.map((l, k) => h('option', { value: k }, `${l.name} (${l.count} soru)`)));
+        sel.value = s._l >= 0 ? s._l : -1;
+        const st = h('input', { type: 'number', min: 1, id: `ex-map-s-${i}`, value: s._s || 1, style: { width: '84px' }, oninput: e => { s._s = Math.max(1, parseInt(e.target.value) || 1); refreshMap(); } }), c = h('span', { class: 'small', id: `ex-map-r-${i}` });
+        mapCells[i] = c; return h('tr', null, h('td', null, h('b', null, s.name || `Bölüm ${i + 1}`), h('div', { class: 'small muted' }, `${s.count} soru`)), h('td', null, sel), h('td', null, st), h('td', null, c));
+      });
+      mapSum = h('div', { class: 'small', id: 'ex-map-sum' });
+      mapBox.append(h('h4', { style: { margin: '.6rem 0 .2rem' } }, 'Formla eşleme'),
+        h('p', { class: 'small muted', style: { margin: '0 0 .3rem' } }, 'Formdaki her ders bloğu sınavdaki sorulardan fazla satır içerebilir (örn. formda 20, sınavda 10 soru): dersin soruları kendi bloğunun ilk satırlarına yerleşir, kalan satırlar okunmaz. Gerekirse bloğu ve başlangıç satırını elle seçin.'),
+        h('div', { class: 'tablewrap', style: { maxHeight: 'none' } }, h('table', null, h('thead', null, h('tr', null, ['Sınav dersi', 'Formdaki blok', 'Başlangıç satırı', 'Sonuç'].map(x => h('th', null, x)))), h('tbody', null, rows))),
+        h('div', { class: 'row', style: { marginTop: '.3rem' } }, mapSum, hasManualMap() ? h('button', { class: 'btn sm ghost', id: 'ex-map-auto', onclick: () => { sections.forEach(x => { x._l = -1; x._s = 1; }); drawMap(); } }, 'Hepsini otomatiğe çevir') : null));
+      refreshMap();
+    }
     function drawStd() {
       const on = tplSel.value.startsWith('std:'); stdBox.style.display = on ? '' : 'none'; clear(stdInfo);
+      const ct = tplOf(); if (ct) { const j = ct.json, same = j.lessons.length === sections.length && j.lessons.every((l, i) => l.count === sections[i].count && l.name === sections[i].name); stdInfo.append(h('div', { class: 'row' }, h('span', { class: 'small', id: 'ex-form-info' }, `Harici form: ${j.questions} soru · ${j.choices} şık · ${j.lessons.map(l => `${l.name} ${l.count}`).join(' · ')}`), same ? null : h('button', { class: 'btn sm', id: 'ex-apply-lessons', onclick: applyTplLessons }, 'Dersleri bu formdan al')), mapBox); drawMap(); }
       if (on) { const e = Katalog.byId(tplSel.value.slice(4)); if (e) { const r = tryBuild(Katalog.formOpts(e, { nup: +stdNup.value, digits: +stdD.value, schoolDigits: +stdSd.value })); stdInfo.append(r.error ? h('span', { style: { color: 'var(--bad)' } }, r.error) : `Form: ${Katalog.total(e)} soru · ders ders sütunlar, numaralar her derste 1’den başlar · form kimliği ${r.tpl.formCodeHex}`); } }
     }
     stdD.addEventListener('change', drawStd); stdSd.addEventListener('change', drawStd);
-    const status = h('select', null, h('option', { value: 'open' }, 'Okutmaya açık'), h('option', { value: 'draft' }, 'Taslak (okutulamaz)'), h('option', { value: 'closed' }, 'Kapalı')); status.value = ex ? ex.status : 'open';
+    const status = h('select', { id: 'ex-status' }, h('option', { value: 'open' }, 'Okutmaya açık'), h('option', { value: 'draft' }, 'Taslak (okutulamaz)'), h('option', { value: 'closed' }, 'Kapalı')); status.value = ex ? ex.status : 'open';
     const showKeys = h('input', { type: 'checkbox', checked: c0.showKeys !== false }), veli = h('input', { type: 'checkbox', checked: c0.veli === true, id: 'ex-veli' });
     const err = h('div');
     drawSections(); drawMethod(); drawKeys(); drawStd();
+    if (init && init.templateId && S.templates.some(t => t.templateId === init.templateId)) { tplSel.value = init.templateId; applyTplLessons(); name.value = name.value || (S.templates.find(t => t.templateId === init.templateId) || {}).name || ''; }
     if (init && init.entryId) { const e = Katalog.byId(init.entryId); if (e) { preset.value = e.group !== 'tek' ? e.id : ''; applyEntry(e, true); if (init.nup) stdNup.value = init.nup; if (init.d != null) stdD.value = init.d; stdSd.value = init.sd || 0; drawStd(); } }
     const body = h('div', null,
-      h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sınav adı'), name), h('div', { class: 'field' }, h('label', null, 'Tarih'), date), h('div', { class: 'field' }, h('label', null, 'Kapsam (hangi okullar katılır)'), scopeSel)),
+      h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sınav adı'), name), h('div', { class: 'field' }, h('label', null, 'Tarih'), date), h('div', { class: 'field' }, h('label', null, 'Kapsam (hangi okullar katılır)'), scopeBox)),
       u.role === 'ogretmen' ? h('p', { class: 'small muted' }, 'Bu sınav kişiseldir: yalnızca siz ve okul yöneticiniz görür; aynı okuldaki diğer öğretmenler ve ilçe/il yetkilileri göremez.') : h('p', { class: 'small muted' }, 'Aynı sınavı birden çok okul okutur; sonuçlar tek havuzda toplanır ve okullar/ilçeler birbiriyle karşılaştırılır.'),
       h('h3', { style: { marginTop: '1rem' } }, 'Puanlama'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Hazır ayar'), preset), h('div', { class: 'field' }, h('label', null, 'Şık sayısı'), choices), h('div', { class: 'field' }, h('label', null, 'Net kuralı'), pen), h('div', { class: 'field' }, h('label', null, 'Puan yöntemi'), methodSel)), methodBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Ders / bölümler ve katsayılar'), secBox,
@@ -132,10 +204,19 @@ App.views.exams = function (root) {
         templateId = Katalog.stdId(e.id, +stdNup.value, { sd: +stdSd.value, d: +stdD.value });
       } else if (templateId) {
         const t = S.templates.find(x => x.templateId === templateId);
+        if (t && t.json && t.json.kind === 'custom' && Array.isArray(t.json.lessons) && window.OMRDetect) {
+          const fs = OMRDetect.formSlots(sections, t.json.lessons, mapSpec());
+          if (!fs.ok) { err.append(h('div', { class: 'alert bad', id: 'ex-save-maperr' }, 'Sınav dersleri formla eşleşmiyor: ' + (fs.problems.join(' ') || 'soru yok') + ' "Formla eşleme" bölümünden bloğu/başlangıç satırını ayarlayın ya da soru sayılarını düzeltin.')); return false; }
+        } else if (t && t.json && t.json.kind === 'custom' && t.json.questions && t.json.questions !== totalN()) { err.append(h('div', { class: 'alert bad' }, `Seçilen form ${t.json.questions} soruluk, sınavınızda ${totalN()} soru var. Soru sayılarını eşitleyin ya da başka form seçin.`)); return false; }
         if (t && t.json && t.json.kind === 'generated' && t.json.opts && t.json.opts.questions !== totalN()) { err.append(h('div', { class: 'alert bad' }, `Seçilen şablon ${t.json.opts.questions} soruluk, sınavınızda ${totalN()} soru var.`)); return false; }
       }
+      const kp = keyProblems();
+      if (status.value === 'open' && kp.length) { err.append(h('div', { class: 'alert bad', id: 'ex-save-keyerr' }, 'Cevap anahtarı eksik ya da hatalı: ' + kp.slice(0, 4).join(' | ') + (kp.length > 4 ? ` … (+${kp.length - 4})` : '') + ' Anahtarı tamamlayın ya da durumu "Taslak" yapın.')); return false; }
+      const fixKey = (s, b) => { const k = keyOf(s, b); return k.length >= s.count ? k.slice(0, s.count) : k + '.'.repeat(s.count - k.length); };
+      const flat = Object.fromEntries(booklets.map(b => [b, sections.map(s => fixKey(s, b)).join('')]));
+      const useMap = !!tplOf() && hasManualMap();
       const config = { sections: sections.map(s => ({ name: s.name.trim(), count: s.count, coef: s.coef })), choices: +choices.value, penalty: parseFloat(pen.value), method: methodSel.value, base: parseFloat(base.value), max: parseFloat(max.value), a: parseFloat(ca.value) || 0, b: parseFloat(cb.value) || 1,
-        keys: Object.fromEntries(booklets.map(b => [b, keys[b] || ''])), booklets, templateId, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
+        keys: flat, booklets, templateId, formMap: useMap ? mapSpec() : undefined, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
       try {
         const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: sc[1], status: status.value, config }, allowIssues: status.value !== 'open' });
         await refreshBase(); draw(); toast('Sınav kaydedildi', 'ok');

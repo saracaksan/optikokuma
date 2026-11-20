@@ -24,13 +24,14 @@ async function loadResults(examId, force) {
 }
 
 App.views.results = function (root) {
+  RS.school = ''; RS.schoolTouched = false;   // ekrana her girişte ortak okul seçimi uygulanır
   const S = App.state, exams = S.exams;
   if (!RS.examId || !examById(RS.examId)) RS.examId = (Settings.get('resExam', '') && examById(Settings.get('resExam', ''))) ? Settings.get('resExam', '') : (exams[0] ? exams[0].examId : '');
   const exSel = h('select', { id: 'rs-exam' }, exams.length ? exams.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}${e.personal && e.owner !== S.user.username ? ' · ' + (e.ownerName || e.owner) : ''}`)) : h('option', { value: '' }, '(sınav yok)'));
   const body = h('div');
   root.append(h('div', { class: 'row between' }, h('h1', null, 'Sonuçlar'), h('div', { class: 'row' }, exSel, h('button', { class: 'btn', onclick: () => load(true) }, '↻ Yenile'))), body);
   if (RS.examId) exSel.value = RS.examId;
-  exSel.addEventListener('change', () => { RS.examId = exSel.value; Settings.set('resExam', RS.examId); RS.q = RS.school = RS.cls = ''; load(); });
+  exSel.addEventListener('change', () => { RS.examId = exSel.value; Settings.set('resExam', RS.examId); RS.q = RS.school = RS.cls = ''; RS.schoolTouched = false; load(); });
 
   async function load() {
     clear(body); if (!RS.examId) { body.append(h('div', { class: 'empty card' }, 'Henüz sınav yok.')); return; }
@@ -58,7 +59,8 @@ App.views.results = function (root) {
     const rows = D.rows, secs = D.sections;
     const schools = Array.from(new Map(rows.map(r => [r.okulKodu, r.okulAdi]))), classes = Array.from(new Set(rows.map(r => r.sinif).filter(Boolean))).sort();
     const q = h('input', { type: 'search', placeholder: 'Ad, no ara…', value: RS.q, oninput: e => { RS.q = e.target.value; apply(); } });
-    const sch = h('select', { onchange: e => { RS.school = e.target.value; apply(); } }, h('option', { value: '' }, 'Tüm okullar'), schools.map(([k, v]) => h('option', { value: k }, v)));
+    if (!RS.schoolTouched && !RS.school) { const g = Sel.okul(schools.map(([k]) => ({ okulKodu: k })), ''); if (g) RS.school = g; }   // ortak okul seçimi (diğer ekranlarla aynı)
+    const sch = h('select', { onchange: e => { RS.school = e.target.value; RS.schoolTouched = true; if (RS.school) Sel.set({ okul: RS.school }); apply(); } }, h('option', { value: '' }, 'Tüm okullar'), schools.map(([k, v]) => h('option', { value: k }, v)));
     const cls = h('select', { onchange: e => { RS.cls = e.target.value; apply(); } }, h('option', { value: '' }, 'Tüm sınıflar'), classes.map(k => h('option', { value: k }, k)));
     sch.value = RS.school; cls.value = RS.cls;
     const cols = [
@@ -133,7 +135,7 @@ App.views.results = function (root) {
   /* ---- karne ---- */
   function tabKarne(pane, D) {
     const schools = Array.from(new Map(D.rows.map(r => [r.okulKodu, r.okulAdi])));
-    const sch = h('select', null, h('option', { value: '' }, 'Tüm okullarım'), schools.map(([k, v]) => h('option', { value: k }, v))), cls = h('select', null, h('option', { value: '' }, 'Tüm sınıflar'), Array.from(new Set(D.rows.map(r => r.sinif).filter(Boolean))).sort().map(k => h('option', { value: k }, k)));
+    const sch = h('select', { onchange: e => { if (e.target.value) Sel.set({ okul: e.target.value }); } }, h('option', { value: '' }, 'Tüm okullarım'), schools.map(([k, v]) => h('option', { value: k }, v))), cls = h('select', null, h('option', { value: '' }, 'Tüm sınıflar'), Array.from(new Set(D.rows.map(r => r.sinif).filter(Boolean))).sort().map(k => h('option', { value: k }, k)));
     pane.append(h('div', { class: 'card' }, h('h2', null, 'Öğrenci karneleri'), h('p', { class: 'muted small' }, 'Her öğrenci için ayrı A4 sayfa: ders bazlı D/Y/B/net, standart puan, okul-ilçe-il-genel sıralaması, ortalamalarla karşılaştırma ve cevap-anahtar tablosu. Yazdırma penceresinde "PDF olarak kaydet" seçebilirsiniz. Tek bir öğrencinin karnesi için "Öğrenciler" sekmesinde satıra tıklayın.'),
       h('div', { class: 'row' }, sch, cls, h('button', { class: 'btn primary', onclick: () => { const rows = D.rows.filter(r => (!sch.value || r.okulKodu === sch.value) && (!cls.value || r.sinif === cls.value)).sort((a, b) => (a.sinif || '').localeCompare(b.sinif || '', 'tr') || a.rOkul - b.rOkul); if (!rows.length) return toast('Seçimde öğrenci yok', 'bad'); if (rows.length > 300 && !confirm(`${rows.length} karne hazırlanacak. Devam?`)) return; printKarne(rows); } }, 'Karneleri yazdır / PDF'))));
   }

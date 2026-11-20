@@ -55,8 +55,10 @@ async function renderPdfPage(src) {
   const cx = cv.getContext('2d', { willReadFrequently: true }); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
   await page.render({ canvasContext: cx, canvas: cv, viewport: vp }).promise;
   const d = cx.getImageData(0, 0, cv.width, cv.height); page.cleanup();
-  return { gray: OMR.rgbaToGray(d.data, cv.width, cv.height), w: cv.width, h: cv.height };
+  return grayOf(d.data, cv.width, cv.height);
 }
+/** RGBA → gri; pembe/mor gibi açık renkli baskıda rgbaToGray mürekkep kanalını güçlendirir (tint: güçlendirme uygulandı → silik baskı uyarısı için) */
+function grayOf(rgba, w, h) { const gray = OMR.rgbaToGray(rgba, w, h), m = OMR.rgbaToGray; return { gray, w, h, tint: m.mode === 'ink' && (m.gain || 1) > 1.15 }; }
 
 async function loadGray(file) {
   if (file.kind === 'pdf') return renderPdfPage(file);
@@ -67,14 +69,14 @@ async function loadGray(file) {
   const cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
   const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(bmp, 0, 0, w, hh); if (bmp.close) bmp.close();
   const d = cx.getImageData(0, 0, w, hh);
-  return { gray: OMR.rgbaToGray(d.data, w, hh), w, h: hh };
+  return grayOf(d.data, w, hh);
 }
 
 function runRead(img, tpl, opts) {
   return new Promise(resolve => {
     const fallback = () => {
       try {
-        const res = OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
+        const res = tpl.auto && window.OMRDetect ? OMRDetect.readAuto(img, tpl, opts || {}) : OMR.readPage(img, tpl, opts || {}), previews = [], frame = tpl.frame, s = Math.min(8, 1500 / Math.max(frame.w, frame.h));
         if (res.ok) res.forms.forEach(f => { if (!f.ok) return; const rc = OMR.rectify(img, f.H, frame, s); previews.push({ index: f.index, gray: rc.gray, w: rc.w, h: rc.h, s }); delete f.H; });
         resolve({ res, previews });
       } catch (e) { resolve({ error: e.message }); }
@@ -109,6 +111,13 @@ function parseNo(group, label) {
 }
 
 /* ---------------------------------------------------------------- kayıt değerlendirme */
+/** Formdaki (kodlanmış) ad-soyad ↔ liste karşılaştırması: Türkçe harf/boşluk farkı yok sayılır, formda kısaltılmış (ilk N harf) ad kabul edilir */
+const codedName = r => [r.ocrName, r.ocrSurname].filter(Boolean).join(' ').trim();
+function nameMatches(rec, stu) {
+  const pair = (coded, full) => { const a = deTR(coded), b = deTR(full); if (a.length < 3 || !b) return true; const n = Math.min(a.length, b.length); return b.slice(0, n) === a.slice(0, n); };
+  return pair(rec.ocrName, stu.ad) && pair(rec.ocrSurname, stu.soyad);
+}
+const trCase = t => String(t || '').toLocaleLowerCase('tr').replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toLocaleUpperCase('tr'));
 function evaluate(rec, ctx) {
   const reasons = [], strict = Settings.get('strictFlags', true);
   const cnt = t => rec.flags.filter(f => f.q && f.type === t).length;
@@ -130,9 +139,18 @@ function evaluate(rec, ctx) {
       else if (!SC.sel || schoolKey(SC.sel, sd) !== rec.sch) hard.push(`Formdaki kurum kodu (${rec.sch}) seçili okulla uyuşmuyor`);
     } else if (auto) { rec.okul = ''; hard.push(rec.schoolBad || 'Kurum kodu işaretlenmemiş (okul belirlenemedi)'); }
   } else if (auto && !rec.okulManual) { rec.okul = ''; hard.push('Okul belirlenemedi (bu formda kurum kodu alanı yok)'); }
-  const school = recSchool(rec), st = stuOf(school);
+  const fit = rec.fit;    // yan çizgili formlar: işaret eşleşmesi zayıfsa satır kayması olabilir → okuma yine de gösterilir ama incelenmeden onaylanmaz
+  if (fit && !fit.failed) {
+    if (fit.trackMismatch) hard.push(`Yan çizgi sayısı şablondakinden farklı (${(fit.tracks || []).join('/')} ≠ ${(fit.expectTracks || []).join('/')}); formun kenarı kesik ya da eksik görünüyor olabilir`);
+    else if (ctx.frameKind === 'track' ? fit.score < 0.9 : ctx.frameKind === 'sides' && fit.score < 0.7) hard.push(`Şablonla örtüşme düşük (%${Math.round(fit.score * 100)}): satırlar kaymış olabilir, incelemede baloncuk dairelerini kontrol edin`);
+  }
+  const school = recSchool(rec), st = stuOf(school), stu = school ? st.map[normNo(rec.studentNo)] : null, coded = codedName(rec);
+  if (ctx.hasName && coded) {   // formda ad-soyad kodlu: öğrenci listesindekiyle karşılaştır (numara yanlış okunduysa burada yakalanır)
+    if (/\?/.test(rec.ocrName + rec.ocrSurname)) reasons.push('Formdaki ad/soyad tam okunamadı (çift işaret ya da silik)');
+    else if (stu && !nameMatches(rec, stu)) reasons.push(`Formdaki ad-soyad (${coded}) listedeki öğrenciyle (${stu.ad} ${stu.soyad}) uyuşmuyor; numara yanlış işaretlenmiş olabilir`);
+  }
   if (rec.noBad) hard.push(rec.noBad);
-  else if (school && st.list.length && !st.map[normNo(rec.studentNo)]) hard.push('Öğrenci listede yok');
+  else if (school && st.list.length && !stu) hard.push('Öğrenci listede yok' + (coded ? ' (formdaki ad-soyad: ' + coded + ')' : ''));
   if (ctx.needBooklet && !rec.booklet) hard.push('Kitapçık türü işaretlenmemiş');
   if (ctx.dups[school + '|' + normNo(rec.studentNo)] > 1) hard.push('Aynı numara bu oturumda birden fazla formda');
   if (rec.bkConflict) hard.push('Kitapçık çift işaretli');
@@ -140,7 +158,7 @@ function evaluate(rec, ctx) {
 }
 function evalAll() {
   const ex = examById(SC.examId); if (!ex || !SC.tplInfo) return;
-  const cfg = examCfg(ex), tpl = SC.tplInfo.tpl, ctx = { needBooklet: Object.keys(cfg.keys).length > 1, dups: {}, schoolDigits: tpl.schoolDigits | 0, expect: SC.expect };
+  const cfg = examCfg(ex), tpl = SC.tplInfo.tpl, ctx = { needBooklet: Object.keys(cfg.keys).length > 1, dups: {}, schoolDigits: tpl.schoolDigits | 0, expect: SC.expect, frameKind: tpl.frameKind || 'corners', hasName: !!(tpl.nameLen || tpl.surnameLen) };
   SC.forms.forEach(r => { if (!r.error && !r.removed && r.studentNo && !r.noBad) { const k = recSchool(r) + '|' + normNo(r.studentNo); ctx.dups[k] = (ctx.dups[k] || 0) + 1; } });
   SC.forms.forEach(r => { if (!r.error && !r.removed) evaluate(r, ctx); });
 }
@@ -157,7 +175,7 @@ async function makeRecords(file, out, tpl, cfgBooklets) {
     const bk = f.booklet || (cfgBooklets.length === 1 ? cfgBooklets[0] : '');
     recs.push({
       uid: ++SC.seq, file, fileName: file.name + (res.forms.length > 1 ? ` · form ${f.index + 1}` : ''), formIdx: f.index, orient: res.orientation,
-      studentNo: pn.no, noBad: pn.bad || '', sch: ps && !ps.bad ? ps.no.padStart(sdg, '0') : '', schoolBad: ps && ps.bad || '', fc: f.formCode || null, booklet: bk, bkConflict: !!f.flags.find(x => x.field === 'booklet' && x.type === 'multi'),
+      studentNo: pn.no, noBad: pn.bad || '', ocrName: f.name || '', ocrSurname: f.surname || '', fit: res.fit || null, sch: ps && !ps.bad ? ps.no.padStart(sdg, '0') : '', schoolBad: ps && ps.bad || '', fc: f.formCode || null, booklet: bk, bkConflict: !!f.flags.find(x => x.field === 'booklet' && x.type === 'multi'),
       answers: f.answers, orig: f.answers, flags: f.flags.filter(x => x.q), groups: f.groups, edits: {}, blob, pv: pv ? { w: pv.w, h: pv.h, s: pv.s } : null, status: 'check', reasons: []
     });
   }
@@ -170,17 +188,19 @@ App.views.scan = function (root) {
   const open = S.exams.filter(canScanExam);
   if (!SC.examId || !examById(SC.examId)) SC.examId = Settings.get('scanExam', '') && examById(Settings.get('scanExam', '')) ? Settings.get('scanExam', '') : (open[0] ? open[0].examId : '');
   const exSel = h('select', { id: 'sc-exam' }, open.length ? open.map(e => h('option', { value: e.examId }, `${e.name}${e.date ? ' · ' + e.date : ''}`)) : h('option', { value: '' }, '(açık sınav yok)'));
-  const scSel = h('select', { id: 'sc-school' });
+  const scSel = h('select', { id: 'sc-school' }), scHold = h('div', null, scSel);
   const info = h('div'), listBox = h('div'), progBox = h('div');
-  const fileIn = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
-  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', onchange: e => { handle(Array.from(e.target.files)); e.target.value = ''; } });
+  const fileIn = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', multiple: true, class: 'hidden', onchange: e => { const r = handle(Array.from(e.target.files)); e.target.value = ''; return r; } });
+  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden', onchange: e => { const r = handle(Array.from(e.target.files)); e.target.value = ''; return r; } });
+  const HINT_CORNERS = 'İpucu: formun 4 köşe işareti ve üstteki siyah çubuk görünsün; düz ışık, gölgesiz. Canlı kamera, 4 köşeyi görünce kendiliğinden okur ve doğru/yanlışı hemen gösterir.';
+  const hint = h('p', { class: 'small muted', id: 'sc-hint', style: { margin: '.7rem 0 0' } }, HINT_CORNERS);
   const drop = h('div', { class: 'drop', id: 'sc-drop' },
     h('p', { style: { margin: '0 0 .6rem' } }, 'Taranmış formları (PDF, JPG, PNG) buraya bırakın ya da seçin. Çok sayfalı PDF sayfa sayfa okunur.'),
     h('div', { class: 'row', style: { justifyContent: 'center' } },
       h('button', { class: 'btn primary', id: 'sc-live', onclick: () => openLive() }, '📷 Canlı kamera (otomatik okuma)'),
       h('button', { class: 'btn', id: 'sc-pick', onclick: () => fileIn.click() }, 'Dosya seç'),
       h('button', { class: 'btn', onclick: () => camIn.click() }, 'Fotoğraf çek')),
-    h('p', { class: 'small muted', style: { margin: '.7rem 0 0' } }, 'İpucu: formun 4 köşe işareti ve üstteki siyah çubuk görünsün; düz ışık, gölgesiz. Canlı kamera, 4 köşeyi görünce kendiliğinden okur ve doğru/yanlışı hemen gösterir.'));
+    hint);
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => handle(Array.from(e.dataTransfer.files)));
@@ -192,12 +212,19 @@ App.views.scan = function (root) {
     drop.classList.remove('hidden');
     const schools = S.schools.filter(s => examCovers(ex, s)); SC.auth = schools;
     SC.tplInfo = resolveTemplate(ex); const cfg = examCfg(ex), t = SC.tplInfo.tpl; SC.expect = t.kind === 'generated' ? t.formCode : null;
+    const fk = t.frameKind, edge = fk === 'sides' || fk === 'track', live = $('#sc-live'); if (live) live.disabled = edge;
+    hint.textContent = edge ? `İpucu: bu formda köşe karesi yok; formun kenarlarındaki siyah çizgilerin ${fk === 'track' ? '(tek kenar)' : '(iki kenar)'} hepsi ve tüm baloncuk alanı görünsün. Düz ışık, gölgesiz. ${fk === 'track' ? 'Tek çizgili formlarda en iyi sonuç tarayıcıdadır; fotoğrafı düz ve dik açıyla çekin. ' : ''}Canlı kamera yalnızca köşe karesi olan formlarda çalışır; burada dosya seçin ya da "Fotoğraf çek" kullanın.` : HINT_CORNERS;
+    const extra = schools.length && t.schoolDigits > 0 ? [{ value: SCHOOL_AUTO, label: '⚡ Formdaki kurum kodundan otomatik' }] : [];
     if (!schools.length) scSel.append(h('option', { value: '' }, '(bu sınavda yetkili olduğunuz okul yok)'));
-    if (schools.length && t.schoolDigits > 0) scSel.append(h('option', { value: SCHOOL_AUTO }, '⚡ Formdaki kurum kodundan otomatik'));
+    extra.forEach(x => scSel.append(h('option', { value: x.value }, x.label)));
     schools.forEach(s => scSel.append(h('option', { value: s.okulKodu }, schoolLabel(s))));
-    const last = Settings.get('scanSchool', '');
-    if (schools.some(s => String(s.okulKodu) === String(last)) || (last === SCHOOL_AUTO && t.schoolDigits > 0)) scSel.value = last; else if (t.schoolDigits > 0 && schools.length) scSel.value = SCHOOL_AUTO;
-    info.append(h('div', { class: 'chips' }, h('span', { class: 'chip' }, 'Şablon: ' + SC.tplInfo.name), h('span', { class: 'chip' }, `${cfg.total} soru · ${cfg.choices} şık`), h('span', { class: 'chip' }, Object.keys(cfg.keys).length ? 'Cevap anahtarı: ' + Object.keys(cfg.keys).join(', ') : 'Cevap anahtarı görünmüyor'), t.nup > 1 ? h('span', { class: 'chip' }, `Sayfada ${t.nup} form`) : null, t.schoolDigits > 0 ? h('span', { class: 'chip' }, `Kurum kodu: ${t.schoolDigits} hane`) : null, t.formCodeHex ? h('span', { class: 'chip', title: 'Formun altındaki kimlik kodu; yanlış form otomatik yakalanır' }, 'Form kimliği: ' + t.formCodeHex) : null));
+    // seçim önceliği: "otomatik" tercihi → ortak (il/ilçe/okul) seçim → son kullanılan okul → otomatik (kurum kodu varsa)
+    const last = Settings.get('scanSchool', ''), glob = Sel.okul(schools, '');
+    if (last === SCHOOL_AUTO && t.schoolDigits > 0) scSel.value = SCHOOL_AUTO; else if (glob) scSel.value = glob; else if (schools.some(s => String(s.okulKodu) === String(last))) scSel.value = last; else if (t.schoolDigits > 0 && schools.length) scSel.value = SCHOOL_AUTO;
+    clear(scHold).append(schoolPicker(scSel, schools, { extra }));
+    info.append(h('div', { class: 'chips' }, h('span', { class: 'chip' }, 'Şablon: ' + SC.tplInfo.name), h('span', { class: 'chip' }, `${cfg.total} soru · ${cfg.choices} şık`), h('span', { class: 'chip' }, Object.keys(cfg.keys).length ? 'Cevap anahtarı: ' + Object.keys(cfg.keys).join(', ') : 'Cevap anahtarı görünmüyor'), t.nup > 1 ? h('span', { class: 'chip' }, `Sayfada ${t.nup} form`) : null, edge ? h('span', { class: 'chip' }, fk === 'track' ? 'Tek yan çizgili form' : 'Yan çizgili form') : null, t.nameLen || t.surnameLen ? h('span', { class: 'chip' }, 'Ad-soyad formdan okunur') : null, t.schoolDigits > 0 ? h('span', { class: 'chip' }, `Kurum kodu: ${t.schoolDigits} hane`) : null, t.formCodeHex ? h('span', { class: 'chip', title: 'Formun altındaki kimlik kodu; yanlış form otomatik yakalanır' }, 'Form kimliği: ' + t.formCodeHex) : null));
+    if (SC.tplInfo.mapError) info.append(h('div', { class: 'alert bad', id: 'sc-maperr' }, 'Sınav–form soru eşlemesi kurulamadı: ' + SC.tplInfo.mapError + ' Sınavı düzenleyip "Formla eşleme" bölümünü düzeltin.'));
+    if (SC.tplInfo.mapped) info.append(h('div', { class: 'small muted', id: 'sc-mapnote', style: { marginTop: '.3rem' } }, `Form ${SC.tplInfo.formQuestions} soruluk; sınavda ${cfg.total} soru okunur, formdaki ${SC.tplInfo.mapped.unused} satır yok sayılır. `, SC.tplInfo.mapped.plan.map(p => `${p.name} ← ${p.lessonName ? p.lessonName + ' ' : 'form '}${p.from}–${p.to}`).join(' · ')));
     if (t.questions !== cfg.total || t.choices !== cfg.choices) info.append(h('div', { class: 'alert bad' }, `Şablon (${t.questions} soru, ${t.choices} şık) sınav ayarıyla (${cfg.total} soru, ${cfg.choices} şık) uyuşmuyor. Sınav düzenleme sayfasından şablonu düzeltin.`));
     await selectSchool(scSel.value);
   }
@@ -216,7 +243,7 @@ App.views.scan = function (root) {
   async function readOne(file, img) {
     const ex = examById(SC.examId), tpl = SC.tplInfo.tpl, cfg = examCfg(ex), bks = ex.config.booklets || Object.keys(cfg.keys);
     let recs;
-    try { img = img || await loadGray(file); const out = await runRead(img, tpl, {}); recs = await makeRecords(file, out, tpl, bks); }
+    try { img = img || await loadGray(file); const out = await runRead(img, tpl, {}); recs = await makeRecords(file, out, tpl, bks); recs.forEach(r => { if (img.tint) r.tint = true; }); }
     catch (e) { recs = [{ uid: ++SC.seq, file, fileName: file.name, error: e.message, status: 'error', flags: [], reasons: [] }]; }
     if (SC.okulKodu === SCHOOL_AUTO && tpl.schoolDigits) for (const r of recs) if (r.sch) { const m = matchSchool(r.sch, tpl.schoolDigits); if (m.s) await studentsOf(m.s.okulKodu); }
     SC.forms.push(...recs); evalAll(); renderList();
@@ -271,6 +298,36 @@ App.views.scan = function (root) {
     });
   }
 
+  /* ---- formdan okunan öğrencileri okul listesine aktar ---- */
+  const canEditStudents = () => S.user.role !== 'ogretmen';
+  /** Listede olmayan, formdan (kurum kodu + numara + ad) okunabilmiş öğrenciler */
+  function addable() {
+    const seen = new Set(), out = [];
+    SC.forms.forEach(r => {
+      if (r.removed || r.status === 'error' || !r.ocrName) return;
+      const sc = recSchool(r), no = normNo(r.studentNo); if (!sc || !SC.stu[sc] || !/^\d{1,12}$/.test(no) || /\?/.test(r.ocrName + r.ocrSurname)) return;
+      if (SC.stu[sc].map[no]) return; const k = sc + '|' + no; if (seen.has(k)) return; seen.add(k); out.push({ r, sc, no });
+    });
+    return out;
+  }
+  function confirmList(title, intro, lines, okLabel) {
+    return new Promise(res => { let done = false; const fin = v => { if (!done) { done = true; res(v); } };
+      modal(title, h('div', null, h('p', null, intro), h('div', { class: 'mono small', style: { maxHeight: '40vh', overflow: 'auto' } }, lines.map(l => h('div', null, l)))), { onClose: () => fin(false), buttons: [{ label: 'Vazgeç' }, { label: okLabel, cls: 'primary', fn: () => { fin(true); } }] }); });
+  }
+  async function addStudents(items, silent) {
+    if (!items.length) return 0;
+    if (!silent && !(await confirmList('Öğrencileri listeye ekle', `Formlardan okunan ${items.length} öğrenci okulun öğrenci listesine eklensin mi? Ad ve soyad formdan okunduğu gibi yazılır; sınıf boş kalır (sonra Yönetim → Öğrenciler'den düzenleyebilirsiniz).`, items.slice(0, 12).map(x => `${x.no}  ${trCase(codedName(x.r))}  · ${(schoolByCode(x.sc) || {}).okulAdi || x.sc}`).concat(items.length > 12 ? [`… ve ${items.length - 12} öğrenci daha`] : []), 'Ekle'))) return 0;
+    let n = 0; const errs = [], schools = new Set();
+    for (const x of items) {
+      try { await api('saveStudent', { okulKodu: String(x.sc), ogrNo: x.no, ad: trCase(x.r.ocrName), soyad: trCase(x.r.ocrSurname), sinif: '', yeni: true }); n++; schools.add(String(x.sc)); }
+      catch (e) { errs.push(`${x.no}: ${e.message}`); if (e.code === 'AUTH') break; }
+    }
+    for (const sc of schools) { delete SC.stu[sc]; await studentsOf(sc); }
+    evalAll(); renderList();
+    if (n) toast(`${n} öğrenci listeye eklendi`, 'ok'); if (errs.length) toast(errs.slice(0, 3).join(' · ') + (errs.length > 3 ? ' …' : ''), 'bad', 8000);
+    return n;
+  }
+
   /* ---- liste ---- */
   function renderList() {
     clear(listBox); const ex = examById(SC.examId); if (!ex || !SC.forms.length) return;
@@ -282,19 +339,20 @@ App.views.scan = function (root) {
       h('div', { class: 'row', style: { marginTop: '.8rem' } },
         h('button', { class: 'btn primary', id: 'sc-saveok', disabled: !ok.length, onclick: () => saveMany(ok) }, `Hatasız olanları kuyruğa ekle (${ok.length})`),
         chk.length ? h('button', { class: 'btn', onclick: () => openReview(SC.forms.indexOf(chk[0])) }, `Kontrol gerekenleri incele (${chk.length})`) : null,
+        canEditStudents() && addable().length ? h('button', { class: 'btn', id: 'sc-addall', title: 'Kurum kodu, numara ve ad-soyad formdan okundu; listede olmayanlar okulun öğrenci listesine eklenir', onclick: ev => { ev.currentTarget.disabled = true; addStudents(addable()); } }, `Formdaki öğrencileri listeye ekle (${addable().length})`) : null,
         h('button', { class: 'btn ghost', onclick: async () => { if (!SC.forms.some(x => x.status !== 'saved') || await confirmBox('Listedeki işlenmemiş okutmalar temizlensin mi?', 'Temizle', true)) { SC.forms = []; renderList(); } } }, 'Listeyi temizle'))));
     const wrap = h('div', { class: 'card' }, h('h2', null, 'Okunan formlar'));
     SC.forms.forEach((r, idx) => {
       if (r.removed) return;
       if (r.status === 'error') {
-        wrap.append(h('div', { class: 'formcard check' }, h('span', null, '⚠'), h('div', null, h('b', null, r.fileName), h('div', { class: 'small' }, r.error)),
-          h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => manualCorners(r) }, 'Köşeleri elle işaretle'), SC.tplInfo.custom ? h('button', { class: 'btn sm', onclick: () => reread(r, { rot: 1 }) }, '↻ Yön') : null, h('button', { class: 'btn sm ghost', onclick: () => { r.removed = true; renderList(); } }, '✕'))));
+        wrap.append(h('div', { class: 'formcard check' }, h('span', null, '⚠'), h('div', null, h('b', null, r.fileName), h('div', { class: 'small' }, r.error), r.tint ? h('div', { class: 'small muted' }, 'Açık renkli (pembe/mor) baskı algılandı: tarayıcıda renkli ya da gri tonlama, en az 200 dpi, parlaklığı artırmadan tarayın; JPG sıkıştırmasını düşük tutun.') : null),
+          h('div', { class: 'row' }, SC.tplInfo.tpl.frameKind ? null : h('button', { class: 'btn sm', onclick: () => manualCorners(r) }, 'Köşeleri elle işaretle'), SC.tplInfo.custom ? h('button', { class: 'btn sm', onclick: () => reread(r, { rot: 1 }) }, '↻ Yön') : null, h('button', { class: 'btn sm ghost', onclick: () => { r.removed = true; renderList(); } }, '✕'))));
         return;
       }
       const rsc = recSchool(r), stu = stuOf(rsc).map[normNo(r.studentNo)], rsch = rsc && SC.okulKodu === SCHOOL_AUTO ? schoolByCode(rsc) : null, sc = cfg.keys && Object.keys(cfg.keys).length ? Scoring.scoreStudent(cfg, r.booklet, r.answers) : null;
       wrap.append(h('div', { class: 'formcard ' + (r.status === 'check' ? 'check' : r.status === 'saved' ? 'saved' : '') },
         h('span', { title: r.status }, r.status === 'ok' ? '✓' : r.status === 'saved' ? '⬆' : '⚠'),
-        h('div', null, h('div', null, h('span', { class: 'no' }, r.studentNo || '—'), ' ', h('span', null, stu ? `${stu.ad} ${stu.soyad}` : ''), ' ', r.booklet ? h('span', { class: 'pill' }, 'Kit. ' + r.booklet) : null, rsch ? h('span', { class: 'pill' }, rsch.okulAdi) : null),
+        h('div', null, h('div', null, h('span', { class: 'no' }, r.studentNo || '—'), ' ', h('span', null, stu ? `${stu.ad} ${stu.soyad}` : (codedName(r) ? h('span', { class: 'muted', title: 'Formdaki ad-soyad (öğrenci listede yok)' }, trCase(codedName(r)) + ' (formdan)') : '')), ' ', r.booklet ? h('span', { class: 'pill' }, 'Kit. ' + r.booklet) : null, rsch ? h('span', { class: 'pill' }, rsch.okulAdi) : null),
           h('div', { class: 'small ' + (r.reasons.length ? '' : 'muted') }, r.status === 'saved' ? 'Kuyruğa eklendi' : (r.reasons.length ? r.reasons.join(' · ') : 'Sorun yok'), sc ? ` · D ${sc.D} Y ${sc.Y} B ${sc.B} · net ${nf(sc.net)}` : '', h('span', { class: 'muted' }, ' · ' + r.fileName))),
         h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => openReview(idx) }, r.status === 'saved' ? 'Göster' : 'İncele'))));
     });
@@ -392,6 +450,7 @@ App.views.scan = function (root) {
       const r = cur(); clear(fields);
       const stOf = () => stuOf(recSchool(r)), nameOf = () => { const st = stOf().map[normNo(r.studentNo)]; return st ? `${st.ad} ${st.soyad} · ${st.sinif || ''}` : (recSchool(r) && stOf().list.length ? 'Listede yok' : ''); };
       const paintNm = () => { const t = nameOf(); nm.textContent = t; nm.style.color = t === 'Listede yok' ? 'var(--bad)' : ''; };
+      const nin = (k, label) => h('div', { class: 'field' }, h('label', null, label), h('input', { type: 'text', maxlength: 40, value: r[k] || '', 'data-f': k, onchange: e => { r[k] = e.target.value.toLocaleUpperCase('tr').replace(/[^A-ZÇĞİÖŞÜ ?]/g, ''); evalAll(); paintFields(); renderList(); } }));
       const no = h('input', { type: 'text', inputmode: 'numeric', value: r.studentNo, class: 'mono', oninput: e => { r.studentNo = e.target.value.replace(/[^0-9?]/g, ''); r.noBad = /\?/.test(r.studentNo) || !r.studentNo ? 'Öğrenci no okunamadı' : ''; paintNm(); } });
       const nm = h('div', { class: 'small' });
       const bks = ex.config.booklets || Object.keys(cfg.keys);
@@ -402,7 +461,11 @@ App.views.scan = function (root) {
         sel.value = recSchool(r) || '';
         if (SC.okulKodu === SCHOOL_AUTO) cols.push(h('div', { class: 'field', style: { gridColumn: '1/-1' } }, h('label', null, 'Okul' + (r.sch ? ` · formdaki kurum kodu: ${r.sch}` : '')), sel));
       }
+      if (tpl.nameLen || tpl.surnameLen) cols.push(nin('ocrName', 'Ad (formdan okundu)'), nin('ocrSurname', 'Soyad (formdan okundu)'));
       fields.append(h('div', { class: 'grid' }, cols)); paintNm();
+      const sc0 = recSchool(r), no0 = normNo(r.studentNo);
+      if (canEditStudents() && sc0 && SC.stu[sc0] && !SC.stu[sc0].map[no0] && /^\d{1,12}$/.test(no0) && r.ocrName && !/\?/.test(r.ocrName + r.ocrSurname))
+        fields.append(h('div', { class: 'row', style: { marginTop: '.4rem' } }, h('button', { class: 'btn sm', id: 'sc-addstu', onclick: async ev => { ev.currentTarget.disabled = true; await addStudents([{ r, sc: sc0, no: no0 }], true); paintFields(); } }, `${trCase(codedName(r))} adlı öğrenciyi listeye ekle`)));
       if (r.reasons.length) fields.append(h('div', { class: 'alert warn' }, r.reasons.join(' · ')));
     }
     function paintAll() {
@@ -440,7 +503,7 @@ App.views.scan = function (root) {
       size: 'full', noBackdrop: true, onClose: () => { document.removeEventListener('keydown', onKey); if (curBlobUrl) URL.revokeObjectURL(curBlobUrl); evalAll(); renderList(); },
       buttons: [
         { label: 'Bu formu at', cls: 'danger', fn: () => { cur().removed = true; return true; } },
-        SC.tplInfo.custom ? { label: '↻ Yönü değiştir', keepOpen: true, fn: (e, close) => { const r = cur(); close(); reread(r, { rot: 1 }); } } : { label: 'Köşeleri elle işaretle', keepOpen: true, fn: (e, close) => { const r = cur(); close(); manualCorners(r); } },
+        SC.tplInfo.custom || SC.tplInfo.tpl.frameKind ? { label: '↻ Yönü değiştir', keepOpen: true, fn: (e, close) => { const r = cur(); close(); reread(r, { rot: 1 }); } } : { label: 'Köşeleri elle işaretle', keepOpen: true, fn: (e, close) => { const r = cur(); close(); manualCorners(r); } },
         { label: 'Kapat' }, { label: 'Onayla ve kuyruğa ekle', cls: 'primary', keepOpen: true, fn: fix }]
     });
     const foot = $('footer', dlg.el); if (foot) { foot.prepend(next); foot.prepend(prev); }
@@ -474,7 +537,7 @@ App.views.scan = function (root) {
   }
 
   root.append(h('h1', null, 'Optik okutma'),
-    h('div', { class: 'card' }, h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', { for: 'sc-exam' }, 'Sınav'), exSel), h('div', { class: 'field' }, h('label', { for: 'sc-school' }, 'Okul'), scSel)), info),
+    h('div', { class: 'card' }, h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', { for: 'sc-exam' }, 'Sınav'), exSel), h('div', { class: 'field' }, h('label', { for: 'sc-school' }, 'Okul'), scHold)), info),
     drop, fileIn, camIn, progBox, listBox);
   if (SC.examId) exSel.value = SC.examId;
   selectExam(exSel.value || '');

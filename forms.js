@@ -2,12 +2,13 @@
 'use strict';
 
 const FM = { tab: 'catalog', opts: null, templateId: '', cat: { nup: 1, d: 8, sd: 0 } };
+const deTRs = v => String(v == null ? '' : v).toLocaleLowerCase('tr').replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g').replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c').replace(/\s+/g, '');
 const NUP_LABELS = { 1: 'Sayfada 1 form (A4 tam)', 2: 'Sayfada 2 form (yarım sayfa)', 4: 'Sayfada 4 form (kesilir)', 6: 'Sayfada 6 form (kesilir)', 8: 'Sayfada 8 form (kesilir)' };
 
 App.views.forms = function (root) {
-  const tabs = [['catalog', 'Hazır şablonlar'], ['design', 'Form tasarla ve yazdır'], ['custom', 'Harici optik tanımla']];
+  const tabs = [['catalog', 'Hazır şablonlar'], ['design', 'Form tasarla ve yazdır'], ['auto', 'Harici formu otomatik tanıt'], ['custom', 'Elle tanımla']];
   const tb = h('div', { class: 'tabs' }), pane = h('div');
-  const draw = () => { clear(tb).append(...tabs.map(([id, l]) => h('button', { class: FM.tab === id ? 'active' : '', onclick: () => { FM.tab = id; draw(); } }, l))); clear(pane); ({ catalog: catalogTab, design: designTab, custom: customTab }[FM.tab])(pane, draw); };
+  const draw = () => { clear(tb).append(...tabs.map(([id, l]) => h('button', { class: FM.tab === id ? 'active' : '', onclick: () => { FM.tab = id; draw(); } }, l))); clear(pane); ({ catalog: catalogTab, design: designTab, auto: autoTab, custom: customTab }[FM.tab])(pane, draw); };
   root.append(h('h1', null, 'Optik formlar'), tb, pane); draw();
 };
 
@@ -154,6 +155,7 @@ function designTab(pane, redraw) {
     if (!S.templates.length) { tplList.append(h('p', { class: 'small muted' }, 'Kayıtlı form şablonu yok.')); return; }
     tplList.append(h('div', { class: 'tablewrap', style: { maxHeight: '240px' } }, h('table', null, h('tbody', null, S.templates.map(t => h('tr', null, h('td', null, t.name), h('td', { class: 'small muted' }, t.json && t.json.kind === 'custom' ? 'harici form' : (t.json && t.json.opts ? `${t.json.opts.questions} soru · ${t.json.opts.nup}/sayfa` : '')),
       h('td', { class: 'right nowrap' }, t.json && t.json.kind === 'generated' ? h('button', { class: 'btn sm', onclick: () => { FM.opts = normOpts(t.json.opts); FM.templateId = t.templateId; redraw(); } }, 'Aç') : null,
+        t.json && t.json.kind === 'custom' ? h('button', { class: 'btn sm', 'data-kod': t.templateId, onclick: () => codedPrint(t) }, 'Kodlu baskı') : null,
         h('button', { class: 'btn sm danger', onclick: async () => { if (!(await confirmBox(`"${t.name}" şablonu silinsin mi? Bu şablonu kullanan sınavlar otomatik şablona döner.`, 'Sil', true))) return; try { await api('deleteTemplate', { templateId: t.templateId }); await refreshBase(); drawTpl(); } catch (e) { toast(e.message, 'bad'); } } }, 'Sil'))))))));
   }
   async function saveTpl() {
@@ -164,17 +166,27 @@ function designTab(pane, redraw) {
     } }] });
   }
   const copies = h('input', { type: 'number', min: 1, max: 500, value: 8, style: { width: '90px' } });
-  const schSel = h('select', null, h('option', { value: '' }, 'Okul seçin…'), S.schools.map(s => h('option', { value: s.okulKodu }, schoolLabel(s)))), prefill = h('input', { type: 'checkbox', checked: true }), coded = h('input', { type: 'checkbox' }), clsSel = h('select', null, h('option', { value: '' }, 'Tüm sınıflar'));
-  let stu = [];
-  const info = h('span', { class: 'small muted' });
-  schSel.addEventListener('change', async () => { stu = schSel.value ? await getStudents(schSel.value) : []; clear(clsSel).append(h('option', { value: '' }, 'Tüm sınıflar'), ...Array.from(new Set(stu.map(s => s.sinif).filter(Boolean))).sort().map(c => h('option', { value: c }, c))); info.textContent = stu.length ? `${stu.length} öğrenci` : 'Bu okulda öğrenci listesi yok.'; });
+  const schSel = h('select', null, h('option', { value: '' }, 'Okul seçin…'), S.schools.map(s => h('option', { value: s.okulKodu }, schoolLabel(s)))), prefill = h('input', { type: 'checkbox', checked: true }), coded = h('input', { type: 'checkbox' }), clsSel = h('select', null, h('option', { value: '' }, 'Tüm sınıflar')), schPick = schoolPicker(schSel, S.schools);
+  let stu = []; const picked = new Set();   // seçili öğrenci numaraları (okul değişince sıfırlanır)
+  const info = h('span', { class: 'small muted' }), stuQ = h('input', { type: 'search', id: 'fm-stu-q', placeholder: 'Öğrenci ara (ad, numara)…', oninput: () => paintStu() }), stuBox = h('div', { class: 'stulist', id: 'fm-stu-list' }), pickInfo = h('span', { class: 'small', id: 'fm-pick-info' });
+  const printBtn = h('button', { class: 'btn primary', id: 'fm-print-personal', onclick: () => personalized() }, 'Seçilenler için yazdır');
+  const visibleStu = () => { const t = deTRs(stuQ.value); return stu.filter(s => (!clsSel.value || s.sinif === clsSel.value) && (!t || deTRs(s.ad + s.soyad + s.ogrNo).includes(t))).sort((a, b) => String(a.sinif || '').localeCompare(String(b.sinif || ''), 'tr', { numeric: true }) || String(a.ogrNo).localeCompare(String(b.ogrNo), undefined, { numeric: true })); };
+  function syncPick() { pickInfo.textContent = picked.size ? `${picked.size} öğrenci seçili` : 'Hiç öğrenci seçilmedi'; printBtn.textContent = picked.size ? `Seçilen ${picked.size} öğrenci için yazdır` : 'Seçilenler için yazdır'; printBtn.disabled = !picked.size; }
+  function paintStu() {
+    const list = visibleStu(), shown = list.slice(0, 400);
+    clear(stuBox).append(shown.length ? shown.map(s => h('label', { class: 'stuitem', 'data-no': s.ogrNo }, h('input', { type: 'checkbox', class: 'fm-stu-chk', checked: picked.has(String(s.ogrNo)), onchange: e => { e.target.checked ? picked.add(String(s.ogrNo)) : picked.delete(String(s.ogrNo)); syncPick(); } }), h('span', { class: 'mono small' }, s.sinif || '—'), h('b', null, s.ogrNo), h('span', null, `${s.ad} ${s.soyad}`.trim()))) : h('div', { class: 'small muted', style: { padding: '.5rem' } }, stu.length ? 'Eşleşen öğrenci yok.' : (schSel.value ? 'Bu okulda öğrenci listesi yok (Yönetim → Öğrenciler).' : 'Önce okul seçin.')),
+      list.length > shown.length ? h('div', { class: 'small muted', style: { padding: '.5rem' } }, `İlk ${shown.length} öğrenci gösteriliyor; aramayla daraltın.`) : null);
+    info.textContent = stu.length ? `${stu.length} öğrenci${clsSel.value || stuQ.value ? ` · ${list.length} görünüyor` : ''}` : (schSel.value ? 'Bu okulda öğrenci listesi yok.' : ''); syncPick();
+  }
+  schSel.addEventListener('change', async () => { picked.clear(); stuQ.value = ''; stu = schSel.value ? await getStudents(schSel.value) : []; clear(clsSel).append(h('option', { value: '' }, 'Tüm sınıflar'), ...Array.from(new Set(stu.map(s => s.sinif).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'tr', { numeric: true })).map(c => h('option', { value: c }, c))); paintStu(); });
+  clsSel.addEventListener('change', () => paintStu());
   function personalized() {
     const t = build(); if (t.error) return toast(t.error, 'bad');
     if (!stu.length) return toast('Önce öğrenci listesi olan bir okul seçin.', 'bad');
-    const sch = schoolByCode(schSel.value), list = stu.filter(s => !clsSel.value || s.sinif === clsSel.value).sort((a, b) => (a.sinif || '').localeCompare(b.sinif || '', 'tr') || String(a.ogrNo).localeCompare(String(b.ogrNo), undefined, { numeric: true }));
-    if (!list.length) return toast('Seçimde öğrenci yok.', 'bad');
-    const dg = o.digits, sd = o.schoolDigits, sc = sd ? String(schSel.value).padStart(sd, '0').slice(-sd) : '';
-    printForms(t, list.map(s => { const no = String(s.ogrNo).padStart(dg, '0').slice(-dg || undefined); return { name: `${s.ad} ${s.soyad}`.trim(), school: sch ? sch.okulAdi : '', cls: s.sinif, studentNo: dg ? no : '', schoolCode: sc, fill: coded.checked ? { studentNo: dg ? no : '', schoolCode: sc } : null }; }));
+    const sch = schoolByCode(schSel.value), list = stu.filter(s => picked.has(String(s.ogrNo))).sort((a, b) => (a.sinif || '').localeCompare(b.sinif || '', 'tr', { numeric: true }) || String(a.ogrNo).localeCompare(String(b.ogrNo), undefined, { numeric: true }));
+    if (!list.length) return toast('Yazdırılacak öğrenciyi işaretleyin.', 'bad');
+    const dg = o.digits, sd = o.schoolDigits, sc = sd ? String(schSel.value).padStart(sd, '0').slice(-sd) : '', pre = prefill.checked;
+    printForms(t, list.map(s => { const no = String(s.ogrNo).padStart(dg, '0').slice(-dg || undefined); return { name: pre ? `${s.ad} ${s.soyad}`.trim() : '', school: pre && sch ? sch.okulAdi : '', cls: pre ? s.sinif : '', studentNo: pre && dg ? no : '', schoolCode: pre ? sc : '', fill: coded.checked ? { studentNo: dg ? no : '', schoolCode: sc } : null }; }));
   }
 
   pane.append(h('div', { class: 'review' },
@@ -194,14 +206,17 @@ function designTab(pane, redraw) {
       h('div', { class: 'card' }, h('h2', null, 'Yazdır'),
         h('div', { class: 'row' }, h('label', { class: 'lbl' }, 'Boş form sayfası:'), copies, h('button', { class: 'btn', id: 'fm-print-blank', onclick: () => { const n = Math.max(1, Math.min(500, +copies.value || 1)), t = build(); if (t.error) return toast(t.error, 'bad'); printForms(t, Array.from({ length: n * t.nup }, () => ({}))); } }, 'Boş formları yazdır')),
         h('hr', { style: { border: 0, borderTop: '1px solid var(--line)', margin: '1rem 0' } }),
-        h('div', { class: 'row' }, schSel, clsSel, info),
+        h('div', { class: 'row' }, schPick, clsSel, info),
+        h('div', { class: 'row', style: { margin: '.5rem 0 .3rem' } }, stuQ, h('button', { class: 'btn sm', id: 'fm-pick-vis', onclick: () => { visibleStu().forEach(s => picked.add(String(s.ogrNo))); paintStu(); } }, 'Görünenleri seç'), h('button', { class: 'btn sm ghost', id: 'fm-pick-none', onclick: () => { picked.clear(); paintStu(); } }, 'Seçimi temizle'), pickInfo),
+        stuBox,
         h('label', { class: 'row', style: { margin: '.5rem 0 .2rem' } }, prefill, 'Öğrenci adı, numarası ve kurum kodu kutulara yazılsın'),
         h('label', { class: 'row', style: { margin: '.2rem 0 .5rem' } }, coded, 'Numara ve kurum kodu baloncukları da önceden doldurulsun (kodlanmış form)'),
-        h('button', { class: 'btn', id: 'fm-print-personal', onclick: personalized }, 'Öğrenci listesinden kişiye özel yazdır'),
+        printBtn,
+        h('p', { class: 'small muted', style: { margin: '.4rem 0 0' } }, 'Yalnızca işaretlediğiniz öğrencilerin formu basılır: okulu seçin, öğrencileri işaretleyin (arama ve sınıf süzgeci kullanılabilir).'),
         h('p', { class: 'small muted' }, PRINT_HINT)),
       h('div', { class: 'card' }, h('h2', null, 'Kayıtlı şablonlar'), tplList)),
     h('div', null, h('div', { class: 'card' }, h('h2', null, 'Önizleme'), preview))));
-  drawSecs(); refresh(); drawTpl();
+  drawSecs(); refresh(); drawTpl(); paintStu();
 }
 
 /* ================================================================ harici optik */

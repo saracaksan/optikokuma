@@ -3,32 +3,51 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Optik Okuma Sistemi</title>
+<title>OptiNet — Optik Okuma ve Sınav Analizi</title>
 <meta name="theme-color" content="#14507a">
 <meta name="color-scheme" content="light dark">
 <link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OptiNet">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="application-name" content="OptiNet">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app"><p class="boot">Yükleniyor…</p></div>
 <div id="printArea" aria-hidden="true"></div>
 <div id="toasts" aria-live="polite"></div>
+<script src="kur.js"></script>
 <script src="config.js"></script>
 <script src="omr-core.js"></script>
+<script src="omr-detect.js"></script>
 <script src="katalog.js"></script>
 <script src="scoring.js"></script>
 <script src="app.js"></script>
+<script src="canli.js"></script>
 <script src="queue.js"></script>
 <script src="scan.js"></script>
 <script src="camera.js"></script>
 <script src="results.js"></script>
+<script src="xlsx-lite.js"></script>
+<script src="dis-core.js"></script>
+<script src="dis-sinav.js"></script>
+<script src="analiz-grafik.js"></script>
+<script src="analiz.js"></script>
+<script src="analiz-ogr.js"></script>
+<script src="analiz-sinif.js"></script>
+<script src="analiz-liste.js"></script>
 <script src="exams.js"></script>
 <script src="forms.js"></script>
+<script src="forms-auto.js"></script>
+<script src="forms-kod.js"></script>
 <script src="admin.js"></script>
 <script src="kayit.js"></script>
 <script src="veli.js"></script>
+<script src="veli-wa.js"></script>
 <script src="boot.js"></script>
 </body>
 </html>

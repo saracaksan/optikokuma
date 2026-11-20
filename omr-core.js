@@ -396,12 +396,40 @@
   /* ------------------------------------------------------------------ */
   /*  Görüntü işleme yardımcıları                                        */
   /* ------------------------------------------------------------------ */
+  /** Renkli (RGBA) görüntüyü griye çevirir.
+   *  Siyah/gri baskılı formlarda: parlaklık + en koyu kanal karışımı (eskisi gibi); kırmızı, mavi, yeşil, SARI vurgulayıcı gibi renkli işaretler de koyu görünür.
+   *  PEMBE / MOR / MAVİ / TURUNCU baskılı formlarda (yayınevi denemeleri): kâğıt rengi beyaza dengelenir (sarı ışık, gölge tonu), renkli baskı (halka, çizgi, yazı) yeterince koyulaştırılır.
+   *  Böylece soluk pembe bir halka da koyu kurşun/tükenmez işaretlerden ayrı ama belirgin kalır. Karar görüntünün kendisinden verilir; son karar rgbaToGray.mode içinde ('ink' | 'plain'). */
   function rgbaToGray(rgba, w, h) {
-    const g = new Uint8Array(w * h);
-    // parlaklık + en koyu kanal karışımı: siyah/gri aynı kalır; kırmızı, mavi, yeşil, SARI vurgulayıcı gibi renkli işaretler de koyu görünür
-    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
-      const r = rgba[j], gg = rgba[j + 1], b = rgba[j + 2], lum = (r * 77 + gg * 150 + b * 29) >> 8, mn = r < gg ? (r < b ? r : b) : (gg < b ? gg : b);
-      g[i] = (mn * 5 + lum * 3) >> 3;
+    const n = w * h, g = new Uint8Array(n), step = Math.max(1, Math.floor(Math.sqrt(n / 60000))), hist = new Uint32Array(256);
+    let ns = 0;
+    for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) { const j = (y * w + x) * 4; hist[(rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8]++; ns++; }
+    let acc = 0, thr = 255; for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= ns * 0.35) { thr = v; break; } }      // en aydınlık %35 = kâğıt
+    let sr = 0, sg = 0, sb = 0, sc = 0;
+    for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) { const j = (y * w + x) * 4; if (((rgba[j] * 77 + rgba[j + 1] * 150 + rgba[j + 2] * 29) >> 8) >= thr) { sr += rgba[j]; sg += rgba[j + 1]; sb += rgba[j + 2]; sc++; } }
+    sc = sc || 1; const pr = Math.max(60, sr / sc), pg = Math.max(60, sg / sc), pb = Math.max(60, sb / sc), pm = Math.max(pr, pg, pb);
+    const kr = Math.min(1.6, pm / pr), kg = Math.min(1.6, pm / pg), kb = Math.min(1.6, pm / pb);   // kâğıt rengini nötr yapan kanal çarpanları
+    let ink = 0, tot = 0; const ih = new Uint32Array(256);
+    for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+      const j = (y * w + x) * 4, r = Math.min(255, rgba[j] * kr), gg = Math.min(255, rgba[j + 1] * kg), b = Math.min(255, rgba[j + 2] * kb), mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+      tot++; if (mx - mn >= 30 && mn < 225) { ink++; ih[Math.min(255, ((mn * 5 + ((r * 77 + gg * 150 + b * 29) >> 8) * 3) >> 3) | 0)]++; }
+    }
+    const share = ink / (tot || 1), colored = share >= 0.0025; rgbaToGray.mode = colored ? "ink" : "plain"; rgbaToGray.share = share;
+    if (!colored) {
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        const r = rgba[j], gg = rgba[j + 1], b = rgba[j + 2], lum = (r * 77 + gg * 150 + b * 29) >> 8, mn = r < gg ? (r < b ? r : b) : (gg < b ? gg : b);
+        g[i] = (mn * 5 + lum * 3) >> 3;
+      }
+      return g;
+    }
+    // renkli baskının "çekirdek" koyuluğu (en koyu %15'i): açık renkli baskıysa (soluk pembe/mor/mavi) koyulaştırma kazancı, koyu baskıysa kazanç 1 (dokunma: yazı kalınlaşmasın)
+    let acc2 = 0, core = 255; for (let v = 0; v < 256; v++) { acc2 += ih[v]; if (acc2 >= ink * 0.15) { core = v; break; } }
+    const G = core >= 110 ? Math.min(3, 170 / (255 - core)) : 1; rgbaToGray.gain = G;
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      const r = Math.min(255, rgba[j] * kr), gg = Math.min(255, rgba[j + 1] * kg), b = Math.min(255, rgba[j + 2] * kb), lum = (r * 77 + gg * 150 + b * 29) / 256, mx = r > gg ? (r > b ? r : b) : (gg > b ? gg : b), mn = r < gg ? (r < b ? r : b) : (gg < b ? gg : b);
+      let v = (mn * 5 + lum * 3) / 8;
+      if (G > 1) { const c = mx - mn; if (c > 6) v = 255 - (255 - v) * (1 + (G - 1) * Math.min(1, (c - 6) / 30)); }
+      g[i] = v < 0 ? 0 : v > 255 ? 255 : v | 0;
     }
     return g;
   }
@@ -721,13 +749,14 @@
     const al = (AL && tpl.kind === 'generated') ? alignPage(AL, H, tpl) : null;
     const raw = tpl.groups.map((gr, gi) => {
       const lines = [], gx = gr.xs.reduce((a, b) => a + b, 0) / gr.xs.length, ox = ri => al && al.ok ? al.at(gx, gr.ys[ri])[0] : 0, oy = ri => al && al.ok ? al.at(gx, gr.ys[ri])[1] : 0;
-      if (gr.axis === 'row') for (let ri = 0; ri < gr.ys.length; ri++) lines.push(gr.xs.map(x => bubbleDark(g, w, h, H, x + ox(ri), gr.ys[ri] + oy(ri), tpl.r)));
-      else for (let ci = 0; ci < gr.xs.length; ci++) lines.push(gr.ys.map((y, ri) => bubbleDark(g, w, h, H, gr.xs[ci] + ox(ri), y + oy(ri), tpl.r)));
+      const rg = gr.r || tpl.r;   // grup baloncuğu şablon baloncuğundan farklı boyuttaysa (harici formlarda ad-soyad ızgarası) kendi yarıçapı
+      if (gr.axis === 'row') for (let ri = 0; ri < gr.ys.length; ri++) lines.push(gr.xs.map(x => bubbleDark(g, w, h, H, x + ox(ri), gr.ys[ri] + oy(ri), rg)));
+      else for (let ci = 0; ci < gr.xs.length; ci++) lines.push(gr.ys.map((y, ri) => bubbleDark(g, w, h, H, gr.xs[ci] + ox(ri), y + oy(ri), rg)));
       for (const l of lines) for (const v of l) all.push(v);
       return lines;
     });
     const baseline = percentile(all, 0.5), T = Math.min(0.55, Math.max(0.28, baseline + 0.2));
-    const res = { studentNo: '', schoolCode: '', booklet: '', fields: {}, flags: [], groups: [], threshold: T, baseline };
+    const res = { studentNo: '', schoolCode: '', booklet: '', name: '', surname: '', fields: {}, flags: [], groups: [], threshold: T, baseline };
     if (al) res.align = { ok: !!al.ok, max: al.max, rms: al.rms, bands: al.bands, used: al.used };
     const ans = {};
     tpl.groups.forEach((gr, gi) => {
@@ -749,6 +778,9 @@
       } else if (gr.role === 'booklet') {
         res.booklet = lines[0].v === '-' || lines[0].v === '*' ? '' : lines[0].v;
         if (lines[0].v === '*') res.flags.push({ field: 'booklet', type: 'multi' });
+      } else if (gr.role === 'name' || gr.role === 'surname') {   // harf ızgarası: işaretsiz sütun = boşluk, çift işaret = ?
+        res[gr.role] = lines.map(l => l.v === '-' ? ' ' : l.v === '*' ? '?' : l.v).join('').replace(/\s+$/, '');
+        lines.forEach((l, i) => { if (l.v === '*') res.flags.push({ field: gr.role, col: i, type: 'multi' }); });
       } else res.fields[gr.id] = lines.map(l => l.v).join('');
     });
     const n = tpl.questions || Object.keys(ans).length; let s = '';
@@ -976,6 +1008,7 @@
   return {
     PAGE, PAGE_MARK, ORIENT_BAR, LETTERS, pageForms, buildTemplate, renderPageSVG, formInnerSVG,
     NUPS, CODE_CELLS, LOCAL_BAR, detectFormCode, codeGeometry, formCodeOf, codeHex, readFormCode, cutLinesSVG, modeInfo, probe, readSingle,
-    rgbaToGray, boxDown, rotateGray, adaptiveBinary, findBlobs, homography, applyH, readPage, readFrame, rectify, decideLine, refineMark, toCustom, pxPerUnit, makeAlign, alignPage
+    rgbaToGray, boxDown, rotateGray, adaptiveBinary, findBlobs, homography, applyH, readPage, readFrame, rectify, decideLine, refineMark, toCustom, pxPerUnit, makeAlign, alignPage,
+    pickQuad, sortClockwiseFromTL, percentile, otsu   // omr-detect.js (harici formu kendiliğinden tanıma) kullanır
   };
 });

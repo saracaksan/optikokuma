@@ -1,7 +1,7 @@
 {
-  "name": "Optik Okuma Sistemi",
-  "short_name": "Optik",
-  "description": "Çevrimdışı çalışan optik form okuma, puanlama ve okul karşılaştırma sistemi",
+  "name": "OptiNet — Optik Okuma ve Sınav Analizi",
+  "short_name": "OptiNet",
+  "description": "Çevrimdışı çalışan optik form okuma, puanlama, sınav analizi ve okul karşılaştırma sistemi",
   "lang": "tr",
   "start_url": "./index.html",
   "scope": "./",
@@ -10,8 +10,34 @@
   "background_color": "#f4f6f8",
   "theme_color": "#14507a",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
-  ]
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "categories": [
+    "education",
+    "productivity"
+  ],
+  "prefer_related_applications": false
 }
