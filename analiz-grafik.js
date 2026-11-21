@@ -150,11 +150,49 @@ const AnViz = (() => {
     return wrap;
   }
 
+  /* ------------------------------------------------------------ dağılım (saçılım) grafiği: A sınavı ↔ B sınavı
+   o: { points:[{x, y, label, sub, g:0|1|2}], series:[{name, c, shape:'circle'|'diamond'|'square'}], lo, hi, fmt, xTitle, yTitle, diag:true, label, corner }
+   Köşegenin üstü: y > x (B'de yükselen); altı: B'de düşen. Şekil + renk birlikte kullanılır (renk tek başına taşıyıcı değildir). */
+  function scatter(o) {
+    const pts = (o.points || []).filter(p => num(p.x) && num(p.y)), fmt = o.fmt || (v => nf(v, 1));
+    if (!pts.length) return h('div', { class: 'muted small' }, 'Grafik için yeterli veri yok.');
+    const W = 720, H = o.h || 420, pl = 56, pr = 18, pt = 16, pb = 46, wrap = h('div', { class: 'vz vz-sq' }), box = h('div', { class: 'vz-box', tabindex: '0' }), tipEl = h('div', { class: 'vz-tip', role: 'status', hidden: true });
+    let lo = o.lo != null ? o.lo : Math.min(...pts.map(p => Math.min(p.x, p.y))), hi = o.hi != null ? o.hi : Math.max(...pts.map(p => Math.max(p.x, p.y)));
+    if (o.lo == null || o.hi == null) { const pad = (hi - lo || 1) * .06; if (o.lo == null) lo -= pad; if (o.hi == null) hi += pad; }
+    const T = ticks(lo, hi, 5); if (o.lo == null) lo = T.lo; if (o.hi == null) hi = T.hi; if (o.lo != null) lo = o.lo; if (o.hi != null) hi = o.hi; if (hi <= lo) hi = lo + 1;
+    const X = v => pl + (v - lo) / (hi - lo) * (W - pl - pr), Y = v => pt + (1 - (v - lo) / (hi - lo)) * (H - pt - pb);
+    const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'vz-svg', role: 'img', 'aria-label': o.label || 'Dağılım grafiği' });
+    T.ticks.filter(v => v >= lo - 1e-9 && v <= hi + 1e-9).forEach(v => { svg.append(sv('line', { x1: pl, x2: W - pr, y1: Y(v), y2: Y(v), class: 'vz-grid' }), sv('line', { x1: X(v), x2: X(v), y1: pt, y2: H - pb, class: 'vz-grid' }), sv('text', { x: pl - 8, y: Y(v) + 4, 'text-anchor': 'end', class: 'vz-ax' }, o.axFmt ? o.axFmt(v) : nf(v, 0)), sv('text', { x: X(v), y: H - pb + 15, 'text-anchor': 'middle', class: 'vz-ax' }, o.axFmt ? o.axFmt(v) : nf(v, 0))); });
+    svg.append(sv('rect', { x: pl, y: pt, width: W - pl - pr, height: H - pt - pb, fill: 'none', class: 'vz-base' }));
+    if (o.diag !== false) { svg.append(sv('line', { x1: X(lo), y1: Y(lo), x2: X(hi), y2: Y(hi), class: 'vz-diag' })); }
+    if (o.xTitle) svg.append(sv('text', { x: (pl + W - pr) / 2, y: H - 6, 'text-anchor': 'middle', class: 'vz-ax ttl' }, o.xTitle));
+    if (o.yTitle) { const t = sv('text', { x: 12, y: (pt + H - pb) / 2, 'text-anchor': 'middle', class: 'vz-ax ttl', transform: `rotate(-90 12 ${(pt + H - pb) / 2})` }, o.yTitle); svg.append(t); }
+    svg.append(sv('text', { x: pl + 8, y: pt + 14, class: 'vz-ax zone' }, '▲ ' + (o.upText || 'Yükselenler')), sv('text', { x: W - pr - 8, y: H - pb - 8, 'text-anchor': 'end', class: 'vz-ax zone' }, '▼ ' + (o.downText || 'Düşenler')));
+    const ser = o.series || [{ name: 'Öğrenci', c: 1 }], mark = (p, s, r) => { const x = X(p.x), y = Y(p.y), sh = s.shape || 'circle', a = Object.assign({ class: 'vz-dot vz-f' + slotOf(s.c) + ' vz-pt', 'fill-opacity': .82 }); if (sh === 'diamond') { a.points = `${x},${y - r * 1.25} ${x + r * 1.25},${y} ${x},${y + r * 1.25} ${x - r * 1.25},${y}`; return sv('polygon', a); } if (sh === 'square') { Object.assign(a, { x: x - r, y: y - r, width: 2 * r, height: 2 * r }); return sv('rect', a); } Object.assign(a, { cx: x, cy: y, r }); return sv('circle', a); };
+    const dots = pts.map(p => mark(p, ser[p.g || 0] || ser[0], 4.2)); dots.forEach(d => svg.append(d));
+    const ring = sv('circle', { r: 8, class: 'vz-ring vz-s1', visibility: 'hidden', cx: 0, cy: 0 }); svg.append(ring);
+    const hit = sv('rect', { x: pl, y: pt, width: W - pl - pr, height: H - pt - pb, fill: 'transparent', class: 'vz-hit' }); svg.append(hit);
+    let cur = -1; const order = pts.map((p, i) => i).sort((a, b) => pts[a].x - pts[b].x || pts[a].y - pts[b].y);
+    const show = i => {
+      cur = i; const p = pts[i], d = p.y - p.x; ring.setAttribute('cx', X(p.x)); ring.setAttribute('cy', Y(p.y)); ring.setAttribute('visibility', 'visible');
+      fillTip(tipEl, p.label + (p.sub ? ' · ' + p.sub : ''), [{ v: fmt(p.x), n: o.xName || 'A' }, { v: fmt(p.y), n: o.yName || 'B' }, { v: (d > 0 ? '+' : d < 0 ? '−' : '') + fmt(Math.abs(d)).replace(/^[-−]/, ''), n: 'değişim (B − A)' }]);
+      const r = svg.getBoundingClientRect(), bR = box.getBoundingClientRect(), k = r.width / W; placeTip(tipEl, box, r.left - bR.left + X(p.x) * k, r.top - bR.top + Y(p.y) * k);
+    };
+    const off = () => { cur = -1; tipEl.hidden = true; ring.setAttribute('visibility', 'hidden'); };
+    const at = ev => { const r = svg.getBoundingClientRect(), k = r.width / W, mx = (ev.clientX - r.left) / k, my = (ev.clientY - r.top) / k; let bi = -1, bd = 22 * 22; pts.forEach((p, i) => { const dx = X(p.x) - mx, dy = Y(p.y) - my, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; bi = i; } }); if (bi >= 0) show(bi); else off(); };
+    hit.addEventListener('pointermove', at); hit.addEventListener('pointerdown', at); hit.addEventListener('pointerleave', off);
+    box.addEventListener('keydown', e => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); const k = order.indexOf(cur); show(order[Math.max(0, Math.min(order.length - 1, (k < 0 ? (e.key === 'ArrowLeft' ? order.length : -1) : k) + (e.key === 'ArrowLeft' ? -1 : 1)))]); } else if (e.key === 'Escape') off(); });
+    box.addEventListener('blur', off); box.append(svg, tipEl);
+    const rows = pts.slice().sort((a, b) => (b.y - b.x) - (a.y - a.x)).map(p => [p.label + (p.sub ? ' · ' + p.sub : ''), fmt(p.x), fmt(p.y), ((p.y - p.x) > 0 ? '+' : (p.y - p.x) < 0 ? '−' : '') + fmt(Math.abs(p.y - p.x))]);
+    wrap.append(box, legend(ser.map(s => ({ name: s.name, c: s.c })), null) || '', tableView([o.corner || 'Öğrenci', o.xName || 'A', o.yName || 'B', 'Değişim'], rows, o.tableLabel));
+    return wrap;
+  }
+
   /* ------------------------------------------------------------ ısı rengi (tablo hücreleri için)
    Ayrışan: ortaya göre mavi (üstte) ↔ kırmızı (altta); metin rengi değişmez (tema mürekkebi). */
   const BLUE = [42, 120, 214], RED = [227, 73, 72];
   function heat(v, mid, span) { if (!num(v) || !span) return ''; const t = Math.max(-1, Math.min(1, (v - mid) / span)), c = t >= 0 ? BLUE : RED, a = Math.min(.5, Math.abs(t) * .5); return a < .03 ? '' : `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(2)})`; }
   function seq(v, lo, hi) { if (!num(v) || hi <= lo) return ''; const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo))); return t < .03 ? '' : `rgba(${BLUE[0]},${BLUE[1]},${BLUE[2]},${(t * .5).toFixed(2)})`; }
 
-  return { line, bars, cols, heat, seq, ticks, legend, tableView, keyEl };
+  return { line, bars, cols, scatter, heat, seq, ticks, legend, tableView, keyEl };
 })();

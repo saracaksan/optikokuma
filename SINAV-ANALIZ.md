@@ -41,7 +41,8 @@ Yapıştırma da olur: Excel'de tabloyu (başlık dahil) kopyalayıp "Ya da tabl
 
 ## 2) Analiz ekranı
 
-Üstte okulu seçin (kendi okulunuz hazır gelir) ve analize girecek sınavları işaretleyin (sistem + dış). Ardından:
+Üstte okulu seçin (kendi okulunuz hazır gelir) ve analize girecek sınavları işaretleyin (sistem + dış). Sekmeler dört grupta toplanmıştır:
+**Sınav** (Sınav listesi · Sınav özeti) · **Kim / hangi grup** (Öğrenci · Sınıf · Ders · Okul) · **Kıyas ve liste** (Karşılaştır · Gelişim · Başarı listeleri) · **Çıktı** (Karneler).
 
 **Sınav listesi** — seçtiğiniz tek sınavın sonuç listesi, PDF'teki gibi: Genel/Okul Ortalaması satırları, her ders için D-Y-N, toplam, puan ve dereceler. Başlığa tıklayıp sıralayın; "⬇ Excel" şablonla **aynı düzende** indirir (tekrar yüklenebilir).
 
@@ -67,9 +68,25 @@ Yapıştırma da olur: Excel'de tabloyu (başlık dahil) kopyalayıp "Ya da tabl
 
 **Gelişim (net artışı)** — öğrenci × sınav tablosu. Her hücrede seçtiğiniz ölçüt (Net, Puan, Başarı %, Doğru, Yanlış; isterseniz tek bir ders) ve bir önceki sınava göre **▲/▼ değişim**; yanında *Son değişim*, *İlk → son* ve küçük bir gidiş grafiği. Üstte kaç öğrencinin arttığı/düştüğü ve ortalama değişim yazar. Öğrenciye tıklayınca **Öğrenci** sekmesi açılır.
 
-**Karşılaştırma ve özet** — sınav sınav ortalama D/Y/net/puan/başarı %, değişimler, grafik, ders bazlı ortalama net ve sınıflara göre tablo. Sınıf süzgeci tüm sekmelerde çalışır.
+**Sınav özeti** (eski adı "Karşılaştırma ve özet") — sınav sınav ortalama D/Y/net/puan/başarı %, değişimler, grafik, ders bazlı ortalama net ve sınıflara göre tablo.
 
-Her sekmede **Excel** ve **Yazdır** vardır (yazdırmada menü ve düğmeler gizlenir, A4 yatay; grafikler sayfa sonunda bölünmez). Öğrenci, Sınıf ve Başarı listeleri sekmelerine **ilk girişte okuldaki tüm sınavlar otomatik işaretlenir** (yukarıdan istediğinizi kaldırabilirsiniz).
+**Okul** — tek okulun bütünü (sınıf ve öğrenci sekmelerinden ayrıdır): okul ortalaması, son sınav ve eğilim, ortalama katılım, %60 üstü / %40 altı oranı; **sınav sınav gelişim** (ortalama, medyan, üst ve alt çeyrek), sınav özet tablosu (katılım, ortalama, en yüksek/en düşük, standart sapma), katılım ve doğru/yanlış/boş grafikleri, **sınıfların karşılaştırması** (çubuk + sınıf × sınav tablosu; sınıfa tıklayınca Sınıf sekmesi açılır), **sınıf × ders ısı tablosu**, derslerin güçlü ve zayıf yönleri (ders gidişi, ilk → son değişim, her dersin en iyi/en düşük sınıfı), **başarı dağılımı** (öğrenci ortalamaları ve sınav sınav), ortalamada ilk 10 / en düşük 10, **en çok gelişen ve gerileyen** öğrenciler ve otomatik değerlendirme cümleleri. Excel (5 sayfa) ve Yazdır.
+
+**Karşılaştır** — işaretli sınavlardan **herhangi ikisini (A ↔ B)** karşılaştırır: 1. ↔ 3. sınav, 1. ↔ 4. sınav, son ↔ önceki (hızlı düğmeler: "Önceki ↔ son", "İlk ↔ son", ⇄ ile yer değiştirme). Üç düzey:
+- **Okul**: A ve B ortalaması, değişim, ortak öğrencilerde değişim, yükselen/düşen/aynı kalan öğrenci sayısı, katılım; ders ders ve **sınıf sınıf** gruplu çubuklar ve tablolar (bir derse ya da sınıfa tıklayınca karşılaştırma ona daralır); **öğrenci öğrenci saçılım grafiği** (x = A, y = B, köşegenin üstü B'de yükselenler; noktanın üstüne gelince ad ve değerler); başarı dağılımının değişimi; **bir önceki sınava göre adım adım değişim**; en çok yükselen / düşen 10 öğrenci (tıklayınca öğrenci açılır).
+- **Sınıf**: aynısı seçilen sınıf için.
+- **Öğrenci**: tek öğrencinin A ve B sonucu, sınıf ve okul ortalamasının değişimi, sınıf/okul sırası, ders ders A/B/sınıf karşılaştırması ve doğru/yanlış/boş.
+Ölçüt: Başarı % / Net / Puan ve isteğe bağlı **tek ders**. Öğrenciler **Ö.No** ile eşleşir. **Soru sayıları ya da puan türleri farklıysa net/puan kıyaslanmaz**: ekran nedenini yazar ve başarı yüzdesine geçer. Excel ve Yazdır.
+
+**Karneler** — A4 **dikey**, PDF'e hazır çıktılar. Üç biçim:
+- *Öğrenci karnesi*: okul adı, ad/no/sınıf, 6 özet kutusu, başarı gelişimi grafiği (öğrenci + sınıf + okul), sınav sonuçları tablosu (D/Y/B, net, puan, başarı %, sınıf farkı, sıralar), ders ders başarı (çubuk + sınıf ortalaması çizgisi + gidiş), değerlendirme yazıları, imza alanları.
+- *Sınıf karneleri*: seçilen sınıfın (ya da tüm okulun) **her öğrencisi için ayrı sayfa**; toplu yazdırılır. Hiçbir sınava girmeyen öğrencinin karnesi çıkmaz (sayı yazılır).
+- *Sınıf / okul raporu*: 1. sayfa özet (kutular, grafik, sınav ve ders tabloları, değerlendirme), 2. sayfa **sınıf için öğrenci listesi**, okul için **sınıf listesi**.
+"Sıralamalar", "Grafik" ve "Değerlendirme yazıları" kutularıyla karneye girecekler seçilir (ör. sıralamayı veliye göstermek istemiyorsanız kapatın). Karneler koyu temada da beyaz kâğıt görünümündedir. **PDF için**: "Yazdır / PDF olarak kaydet" düğmesi tarayıcının yazdırma penceresini açar; hedef olarak **"PDF olarak kaydet"** seçin (kâğıt A4 dikey, "arka plan grafikleri" açık). Ayrı bir PDF kitaplığı kullanılmaz. Excel: karne listesi (sıra, ortalamalar). Karneye **işaretli sınavlar** girer.
+
+Sınıf süzgeci tüm sekmelerde çalışır.
+
+Her sekmede **Excel** ve **Yazdır / PDF** vardır (yazdırmada menü ve düğmeler gizlenir; Karneler A4 dikey, diğer sekmeler A4 yatay; grafikler sayfa sonunda bölünmez). Öğrenci, Sınıf, Ders, Okul, Karşılaştır, Başarı listeleri ve Karneler sekmelerine **ilk girişte okuldaki tüm sınavlar otomatik işaretlenir** (yukarıdan istediğinizi kaldırabilirsiniz).
 
 ### Dikkat edilecekler
 - **Farklı puan türleri karıştırılmaz.** Sistem sınavlarının "Puan"ı ile dış sınavın "LGS Puanı" aynı ölçekte olmadığından, puan grafiği ve ortalamaları yalnızca en çok kullanılan puan türünün sınavlarını kapsar; ekran bunu yazar. Karşılaştırma için tüm sınavlarda ortak olan **Başarı %** (net ÷ soru sayısı) kullanılır. Net ▲/▼ değişimi de yalnızca aynı soru sayılı ardışık sınavlar arasında gösterilir.

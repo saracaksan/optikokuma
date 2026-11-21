@@ -105,14 +105,21 @@ function anSpark(vals) {
 
 /** Yazdır: uygulama kabuğu gizlenir, yalnızca analiz içeriği basılır (veli karnesindeki pt-printing kuralı). */
 function anPrint() {
+  if (AN.tab === 'karne' && typeof krPending === 'function' && krPending()) return toast('Karneler hazırlanıyor; birkaç saniye bekleyip yeniden deneyin.', 'warn');
   document.body.classList.add('pt-printing');
-  const done = () => { document.body.classList.remove('pt-printing'); window.removeEventListener('afterprint', done); };
+  // Karneler A4 dikey, diğer analiz çıktıları A4 yatay basılır (kâğıt yönü bu sayfa kuralıyla belirlenir).
+  const pg = document.createElement('style'); pg.id = 'an-page-style'; pg.textContent = AN.tab === 'karne' ? '@page { size: A4 portrait; margin: 10mm; }' : '@page { size: A4 landscape; margin: 10mm; }'; document.head.appendChild(pg);
+  const done = () => { document.body.classList.remove('pt-printing'); pg.remove(); window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done); setTimeout(() => window.print(), 50);
 }
 
 /* Sekme kayıt defteri: analiz-ogr.js öğrenci / sınıf / ders / liste sekmelerini buraya ekler. { id, label, filters:[], render(pane, sel, ctx), export(sel, ctx) } */
 const ANTABS = [];
-const AN_ORDER = ['list', 'ogr', 'sinif', 'ders', 'listeler', 'dev', 'cmp'], AN_LABEL = { list: 'Sınav listesi', dev: 'Gelişim (net artışı)', cmp: 'Karşılaştırma ve özet' };
+/* Sekmeler gruplanmış sırayla gösterilir: Sınav · Kişi ve gruplar · Kıyas · Çıktı. Sekme kimlikleri (an-tab-<id>) sabittir. */
+const AN_GROUPS = [['Sınav', ['list', 'cmp']], ['Kim / hangi grup', ['ogr', 'sinif', 'ders', 'okul']], ['Kıyas ve liste', ['kars', 'dev', 'listeler']], ['Çıktı', ['karne']]];
+const AN_ORDER = AN_GROUPS.flatMap(g => g[1]), AN_LABEL = { list: 'Sınav listesi', dev: 'Gelişim (net artışı)', cmp: 'Sınav özeti' };
+/** Bu sekmeler ilk açılışta okulun bütün sınavlarını analize katar. */
+const AN_AUTOALL = ['ogr', 'sinif', 'ders', 'listeler', 'okul', 'kars', 'karne'];
 
 /* ---------------------------------------------------------------- görünüm */
 App.views.analiz = function (root) {
@@ -155,10 +162,12 @@ App.views.analiz = function (root) {
     const cls = h('select', { id: 'an-cls', onchange: e => { AN.cls = e.target.value; renderTab(); } }, h('option', { value: '' }, 'Tüm sınıflar'), classes.map(c => h('option', { value: c }, c))); cls.value = AN.cls;
     const met = h('select', { id: 'an-metric', onchange: e => { AN.metric = e.target.value; renderTab(); } }, METRICS.map(([v, l]) => h('option', { value: v }, l))); met.value = AN.metric;
     const les = h('select', { id: 'an-lesson', onchange: e => { AN.lesson = e.target.value; renderTab(); } }, h('option', { value: '' }, 'Tüm dersler (toplam)'), lessons.map(l => h('option', { value: l }, l))); les.value = AN.lesson;
-    const tabs = AN_ORDER.map(id => [id, AN_LABEL[id] || (ANTABS.find(t => t.id === id) || {}).label]).filter(t => t[1]); if (!tabs.some(t => t[0] === AN.tab)) AN.tab = 'list';
-    const tb = h('div', { class: 'tabs no-print' }, tabs.map(([id, l]) => h('button', { id: 'an-tab-' + id, class: AN.tab === id ? 'active' : '', onclick: () => { AN.tab = id; if (['ogr', 'sinif', 'ders', 'listeler'].includes(id) && !AN.autoAll[AN.okul]) { AN.autoAll[AN.okul] = true; if (!anCatalog().every(e => AN.sel.has(e.id))) { selectAll(); return; } } draw(); } }, l)));
+    const tabLabel = id => AN_LABEL[id] || (ANTABS.find(t => t.id === id) || {}).label;
+    if (!AN_ORDER.some(id => id === AN.tab && tabLabel(id))) AN.tab = 'list';
+    const tabBtn = id => h('button', { id: 'an-tab-' + id, class: AN.tab === id ? 'active' : '', onclick: () => { AN.tab = id; if (AN_AUTOALL.includes(id) && !AN.autoAll[AN.okul]) { AN.autoAll[AN.okul] = true; if (!anCatalog().every(e => AN.sel.has(e.id))) { selectAll(); return; } } draw(); } }, tabLabel(id));
+    const tb = h('div', { class: 'tabs an-tabs no-print' }, AN_GROUPS.map(([g, ids], gi) => { const live = ids.filter(tabLabel); return live.length ? h('span', { class: 'tab-grp' + (gi ? ' sep' : ''), 'data-grp': g }, h('span', { class: 'tab-cap' }, g), live.map(tabBtn)) : null; }));
     const rt = ANTABS.find(t => t.id === AN.tab), fl = rt ? (rt.filters || []) : (AN.tab === 'list' ? ['q', 'cls'] : ['q', 'cls', 'metric', 'lesson']);
-    const filt = h('div', { class: 'row an-f no-print', style: { marginBottom: '.7rem' } }, fl.includes('q') ? q : null, fl.includes('cls') ? cls : null, fl.includes('metric') ? [h('span', { class: 'small muted' }, 'Ölçüt:'), met] : null, fl.includes('lesson') ? les : null, h('span', { class: 'grow' }), (!rt || rt.export) ? h('button', { class: 'btn', id: 'an-xlsx', onclick: () => exportXlsx() }, '⬇ Excel') : null, h('button', { class: 'btn', id: 'an-print', onclick: () => anPrint() }, 'Yazdır'));
+    const filt = h('div', { class: 'row an-f no-print', style: { marginBottom: '.7rem' } }, fl.includes('q') ? q : null, fl.includes('cls') ? cls : null, fl.includes('metric') ? [h('span', { class: 'small muted' }, 'Ölçüt:'), met] : null, fl.includes('lesson') ? les : null, h('span', { class: 'grow' }), (!rt || rt.export) ? h('button', { class: 'btn', id: 'an-xlsx', onclick: () => exportXlsx() }, '⬇ Excel') : null, h('button', { class: 'btn', id: 'an-print', title: 'Yazdırma penceresini açar; hedef olarak "PDF olarak kaydet" seçilebilir', onclick: () => anPrint() }, 'Yazdır / PDF'));
     const pane = h('div', { id: 'an-pane' }); body.append(tb, filt, pane); renderTab();
   }
   function renderTab() { const pane = $('#an-pane'); if (!pane) return; clear(pane); const sel = anSelected(); if (!sel.length) return; const rt = ANTABS.find(t => t.id === AN.tab); if (rt) rt.render(pane, sel, ctx); else ({ list: tabList, dev: tabDev, cmp: tabCmp })[AN.tab](pane, sel); drawStatus(); }
