@@ -14,7 +14,7 @@ const stuOf = code => SC.stu[String(code || '')] || { list: [], map: {} };
 /** Okul kodunun formda basılan (sd haneli, soldan 0'la doldurulmuş) hâli */
 const schoolKey = (s, sd) => String(s.okulKodu).padStart(sd, '0').slice(-sd);
 /** Seçili okul: otomatik modda kaydın okulu, aksi hâlde seçilen okul */
-const recSchool = r => SC.okulKodu === SCHOOL_AUTO ? (r.okul || '') : SC.okulKodu;
+const recSchool = r => SC.okulKodu === SCHOOL_AUTO ? (r.okul || (SC.auth.length === 1 ? String(SC.auth[0].okulKodu) : '')) : SC.okulKodu;
 /** Formdaki kurum kodunu yetkili okullarla eşleştirir */
 function matchSchool(code, sd) {
   const m = SC.auth.filter(s => schoolKey(s, sd) === code);
@@ -29,6 +29,10 @@ function examCovers(ex, s) {
   switch (ex.scopeType) {
     case 'genel': return true; case 'il': return s.il === ex.scopeValue;
     case 'ilce': return (s.il + '|' + s.ilce) === ex.scopeValue; case 'okul': return String(s.okulKodu) === String(ex.scopeValue);
+    case 'okullar': {
+      const list = String(ex.scopeValue || '').split(',').map(x => x.trim()).filter(Boolean);
+      return list.includes(String(s.okulKodu));
+    }
   } return false;
 }
 
@@ -131,14 +135,20 @@ function evaluate(rec, ctx) {
     const alt = examsWithFormCode(rec.fc.code, SC.examId);
     hard.push(alt.length ? `Bu form seçili sınavın form türü değil; şu açık sınavda kullanılıyor: ${alt.map(e => e.name).join(', ')}` : 'Bu form seçili sınavın form türüyle uyuşmuyor (form kimliği farklı)');
   }
-  // kurum kodu → okul
+  // kurum kodu → okul (okul elle seçildiyse formda kurum kodu olmasa da seçili okulun listesinde öğrenci numarası aranır)
   if (sd && !rec.okulManual) {
     if (rec.sch) {
       const m = matchSchool(rec.sch, sd);
       if (auto) { rec.okul = m.s ? String(m.s.okulKodu) : ''; if (!m.s) hard.push(m.n > 1 ? `Kurum kodu ${rec.sch} birden fazla okulla eşleşiyor; okulu elle seçin` : `Kurum kodu ${rec.sch} yetkili olduğunuz okullar arasında yok`); }
-      else if (!SC.sel || schoolKey(SC.sel, sd) !== rec.sch) hard.push(`Formdaki kurum kodu (${rec.sch}) seçili okulla uyuşmuyor`);
-    } else if (auto) { rec.okul = ''; hard.push(rec.schoolBad || 'Kurum kodu işaretlenmemiş (okul belirlenemedi)'); }
-  } else if (auto && !rec.okulManual) { rec.okul = ''; hard.push('Okul belirlenemedi (bu formda kurum kodu alanı yok)'); }
+      else if (SC.sel && schoolKey(SC.sel, sd) !== rec.sch) reasons.push(`Formdaki kurum kodu (${rec.sch}) seçili okulla (${SC.sel.okulAdi}) farklı; öğrenci seçili okulda aranıyor`);
+    } else if (auto) {
+      if (SC.auth.length === 1) rec.okul = String(SC.auth[0].okulKodu);
+      else { rec.okul = ''; hard.push(rec.schoolBad || 'Kurum kodu işaretlenmemiş (yukarıdan okulu seçin)'); }
+    }
+  } else if (auto && !rec.okulManual) {
+    if (SC.auth.length === 1) rec.okul = String(SC.auth[0].okulKodu);
+    else { rec.okul = ''; hard.push('Okul belirlenemedi (bu formda kurum kodu alanı yok; yukarıdan okulu seçin)'); }
+  }
   const fit = rec.fit;    // yan çizgili formlar: işaret eşleşmesi zayıfsa satır kayması olabilir → okuma yine de gösterilir ama incelenmeden onaylanmaz
   if (fit && !fit.failed) {
     if (fit.trackMismatch) hard.push(`Yan çizgi sayısı şablondakinden farklı (${(fit.tracks || []).join('/')} ≠ ${(fit.expectTracks || []).join('/')}); formun kenarı kesik ya da eksik görünüyor olabilir`);
@@ -220,7 +230,7 @@ App.views.scan = function (root) {
     schools.forEach(s => scSel.append(h('option', { value: s.okulKodu }, schoolLabel(s))));
     // seçim önceliği: "otomatik" tercihi → ortak (il/ilçe/okul) seçim → son kullanılan okul → otomatik (kurum kodu varsa)
     const last = Settings.get('scanSchool', ''), glob = Sel.okul(schools, '');
-    if (last === SCHOOL_AUTO && t.schoolDigits > 0) scSel.value = SCHOOL_AUTO; else if (glob) scSel.value = glob; else if (schools.some(s => String(s.okulKodu) === String(last))) scSel.value = last; else if (t.schoolDigits > 0 && schools.length) scSel.value = SCHOOL_AUTO;
+    if (schools.length === 1) scSel.value = String(schools[0].okulKodu); else if (last === SCHOOL_AUTO && t.schoolDigits > 0) scSel.value = SCHOOL_AUTO; else if (glob) scSel.value = glob; else if (schools.some(s => String(s.okulKodu) === String(last))) scSel.value = last; else if (t.schoolDigits > 0 && schools.length) scSel.value = SCHOOL_AUTO; else if (schools.length) scSel.value = String(schools[0].okulKodu);
     clear(scHold).append(schoolPicker(scSel, schools, { extra }));
     info.append(h('div', { class: 'chips' }, h('span', { class: 'chip' }, 'Şablon: ' + SC.tplInfo.name), h('span', { class: 'chip' }, `${cfg.total} soru · ${cfg.choices} şık`), h('span', { class: 'chip' }, Object.keys(cfg.keys).length ? 'Cevap anahtarı: ' + Object.keys(cfg.keys).join(', ') : 'Cevap anahtarı görünmüyor'), t.nup > 1 ? h('span', { class: 'chip' }, `Sayfada ${t.nup} form`) : null, edge ? h('span', { class: 'chip' }, fk === 'track' ? 'Tek yan çizgili form' : 'Yan çizgili form') : null, t.nameLen || t.surnameLen ? h('span', { class: 'chip' }, 'Ad-soyad formdan okunur') : null, t.schoolDigits > 0 ? h('span', { class: 'chip' }, `Kurum kodu: ${t.schoolDigits} hane`) : null, t.formCodeHex ? h('span', { class: 'chip', title: 'Formun altındaki kimlik kodu; yanlış form otomatik yakalanır' }, 'Form kimliği: ' + t.formCodeHex) : null));
     if (SC.tplInfo.mapError) info.append(h('div', { class: 'alert bad', id: 'sc-maperr' }, 'Sınav–form soru eşlemesi kurulamadı: ' + SC.tplInfo.mapError + ' Sınavı düzenleyip "Formla eşleme" bölümünü düzeltin.'));

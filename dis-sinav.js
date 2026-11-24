@@ -31,6 +31,14 @@ async function dxReadFile(file) {
   if (u[0] === 0xD0 && u[1] === 0xCF) throw new Error('Bu eski biçimde bir Excel dosyası (.xls). Excel\'de "Farklı kaydet → Excel Çalışma Kitabı (.xlsx)" ya da CSV olarak kaydedip yükleyin.');
   return { sheets: [{ name: 'CSV', rows: parseTable(dxDecode(buf)) }] };
 }
+function dxReadBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result || '').replace(/^data:[^;]+;base64,/, ''));
+    r.onerror = () => rej(new Error('Dosya okunamadı.'));
+    r.readAsDataURL(file);
+  });
+}
 
 /* ---------------------------------------------------------------- şablon indirme */
 Dis.templateModal = function (init) {
@@ -103,14 +111,57 @@ Dis.editor = async function (opts) {
     h('div', { class: 'grid' }, field('Okul', okulPick, 'dx-okulfield'), field('Sınav adı', el.name), field('Tarih', el.date), field('Kaynak / kurum', el.kaynak), field('Puan adı', el.puan), field('Yanlış kuralı', penHold)),
     h('datalist', { id: 'dx-kaynak-list' }, Dis.kaynaklar().map(k => h('option', { value: k }))), targetHold);
 
-  /* ---- Excel / CSV yükle sekmesi */
+  /* ---- Excel / CSV / PDF (Yapay Zekâ) yükle sekmesi */
   const summary = h('div', { id: 'dx-summary' });
   el.file = h('input', { id: 'dx-file', type: 'file', accept: '.xlsx,.xlsm,.csv,.tsv,.txt', onchange: async e => { const f = e.target.files[0]; if (f) await parseInput(() => dxReadFile(f), f.name); e.target.value = ''; } });
+  el.pdfFile = h('input', { id: 'dx-pdf-file', type: 'file', accept: '.pdf,application/pdf,image/jpeg,image/png', onchange: async e => { const f = e.target.files[0]; if (f) await parsePdfAi(f); e.target.value = ''; } });
   el.paste = h('textarea', { id: 'dx-paste', rows: 5, placeholder: 'Excel\'den kopyaladığınız tabloyu (başlık satırı dahil) buraya yapıştırabilirsiniz…', style: { width: '100%' } });
   const uploadPane = h('div', null,
-    h('div', { class: 'row', style: { marginBottom: '.6rem' } }, FilePick.field(el.file, { label: 'Excel / CSV dosyası seç' }), h('button', { class: 'btn', id: 'dx-tpl', onclick: () => Dis.templateModal({ lessons: st.lessons, puanAdi: st.puanAdi, penalty: st.penalty }) }, '⬇ Hazır Excel şablonunu indir')),
+    h('div', { class: 'row', style: { marginBottom: '.6rem' } },
+      FilePick.field(el.file, { label: 'Excel / CSV dosyası seç' }),
+      FilePick.field(el.pdfFile, { label: '🤖 PDF / Görsel Sonuç Listesi Oku (Yapay Zekâ)' }),
+      h('button', { class: 'btn', id: 'dx-tpl', onclick: () => Dis.templateModal({ lessons: st.lessons, puanAdi: st.puanAdi, penalty: st.penalty }) }, '⬇ Hazır Excel şablonunu indir')),
+    h('p', { class: 'small muted', style: { margin: '0 0 .5rem' } }, 'Yayınevi LGS/deneme PDF sonuç listelerini doğrudan yükleyebilirsiniz (ücretsiz Google Gemini API anahtarı aistudio.google.com/apikey üzerinden alınıp Yönetim → Yapay Zekâ ekranına eklenir). Hatalı/eksik satır varsa nedeni aşağıda raporlanır.'),
     h('details', null, h('summary', { class: 'small' }, 'Ya da tabloyu yapıştır'), el.paste, h('div', { class: 'row end', style: { marginTop: '.4rem' } }, h('button', { class: 'btn sm', id: 'dx-parse', onclick: () => { const t = el.paste.value; if (!t.trim()) return toast('Önce tabloyu yapıştırın', 'warn'); parseInput(async () => ({ sheets: [{ name: 'Yapıştırılan', rows: parseTable(t) }] }), 'yapıştırılan tablo'); } }, 'Çözümle'))),
     summary);
+
+  async function parsePdfAi(file) {
+    clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" yapay zekâ ile çözümleniyor… (Büyük PDF dosyaları 15–30 sn sürebilir)`));
+    try {
+      const b64 = await dxReadBase64(file);
+      const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+      const mt = isPdf ? 'application/pdf' : (file.type === 'image/png' ? 'image/png' : 'image/jpeg');
+      const d = await api('aiParseExternalPdf', { file: b64, mediaType: mt, hint: st.name || file.name }, { timeout: 120000 });
+      if (d.examName && !st.touched.name) { st.name = d.examName; el.name.value = d.examName; }
+      else if (!st.name) { st.name = String(file.name || '').replace(/\.[^.]+$/, ''); el.name.value = st.name; }
+      if (d.date && !st.touched.date) { st.date = d.date; el.date.value = d.date; }
+      if (d.kaynak && !st.touched.kaynak) { st.kaynak = d.kaynak; el.kaynak.value = d.kaynak; }
+      if (d.puanAdi && !st.touched.puan) { st.puanAdi = d.puanAdi; el.puan.value = d.puanAdi; }
+      const lessons = (d.lessons || []).map(l => ({ name: l.name, count: l.count || 0, short: l.short || '' }));
+      const rows = (d.rows || []).map(r => ({
+        ogrNo: DisCore.normNo(r.ogrNo || ''),
+        ad: String(r.ad || '').trim(),
+        sinif: String(r.sinif || '').trim(),
+        sec: lessons.map((_, i) => {
+          const t = (r.sec && r.sec[i]) || [];
+          return [DisCore.num(t[0]), DisCore.num(t[1]), DisCore.num(t[2])];
+        }),
+        tot: r.tot ? [DisCore.num(r.tot[0]), DisCore.num(r.tot[1]), DisCore.num(r.tot[2])] : [null, null, null],
+        puan: DisCore.num(r.puan),
+        rk: r.rk || {}
+      }));
+      const p = { lessons, rows, avg: d.avg || null, avgOkul: d.avgOkul || null };
+      DisCore.complete(p, st.penalty);
+      st.lessons = p.lessons; st.rows = p.rows; st.avg = p.avg; st.avgOkul = p.avgOkul;
+      st.warnings = [].concat(d.errors || [], d.warnings || []);
+      st.fileLabel = `${file.name} (${d.providerName || 'Yapay Zekâ'} · ${d.model || ''})`;
+      drawSummary(); drawLessonBox();
+      if (!st.rows.length) summary.append(h('div', { class: 'alert bad' }, 'PDF içinden geçerli öğrenci satırı çıkarılamadı. Dosyanın okunaklı olduğundan emin olun.'));
+      else toast(`PDF okundu: ${st.rows.length} öğrenci (${st.warnings.length} uyarı)`, st.warnings.length ? 'warn' : 'ok');
+    } catch (e) {
+      clear(summary).append(h('div', { class: 'alert bad' }, 'PDF okuma hatası: ' + (e.message || e)));
+    }
+  }
 
   async function parseInput(getWb, label) {
     clear(summary).append(h('div', { class: 'muted small' }, 'Dosya çözümleniyor…'));
@@ -184,7 +235,7 @@ Dis.editor = async function (opts) {
         h('label', { class: 'small row', style: { gap: '.3rem' } }, h('input', { type: 'checkbox', id: 'dx-ranks', checked: st.showRanks, style: { width: 'auto', minHeight: 0 }, onchange: e => { st.showRanks = e.target.checked; drawGrid(); } }), 'Dereceleri de gir (Snf/Okul/İlçe/İl/Genel)'),
         h('span', { class: 'grow' }), h('span', { class: 'small muted' }, `${st.rows.length} satır`), st.rows.length ? h('button', { class: 'btn ghost sm', onclick: async () => { if (await confirmBox('Tablodaki tüm satırlar silinsin mi?', 'Sil', true)) { st.rows = []; drawGrid(); drawSummary(); } } }, 'Temizle') : null),
       h('div', { class: 'small muted', style: { marginBottom: '.4rem' } }, 'D ve Y\'yi girin; Net ve Toplam otomatik hesaplanır. Ö.No öğrenci listesindeyse ad ve sınıf otomatik gelir. Enter bir alt satıra geçer.'),
-      st.rows.length ? h('div', { class: 'tablewrap', style: { maxHeight: '48vh' } }, h('table', { class: 'dx-grid' }, thead, tbody)) : h('div', { class: 'empty card' }, 'Henüz satır yok. "+ Öğrenci satırı ekle" ile başlayın ya da Excel/CSV yükleyin.'),
+      st.rows.length ? h('div', { class: 'tablewrap', style: { maxHeight: '48vh' } }, h('table', { class: 'dx-grid zebra-tbl' }, thead, tbody)) : h('div', { class: 'empty card' }, 'Henüz satır yok. "+ Öğrenci satırı ekle" ile başlayın ya da Excel/CSV yükleyin.'),
       st.rows.length > MAX ? h('div', { class: 'small muted' }, `Ekranda ilk ${MAX} satır düzenlenebilir; ${st.rows.length} satırın tamamı kaydedilir.`) : null);
   }
   const gridPane = h('div', null, h('div', { class: 'field', style: { marginBottom: '.6rem' } }, h('label', null, 'Dersler ve soru sayıları'), lessonHold), gridHold); drawLessonBox();
@@ -192,7 +243,7 @@ Dis.editor = async function (opts) {
   /* ---- sekmeler */
   const pane = h('div'), tabsEl = h('div', { class: 'tabs' });
   const drawTabs = () => {
-    clear(tabsEl).append([['upload', 'Excel / CSV yükle', 'dx-tab-upload'], ['grid', 'Satır satır gir / düzenle', 'dx-tab-grid']].map(([id, l, tid]) => h('button', { id: tid, class: st.tab === id ? 'active' : '', onclick: () => { st.tab = id; drawTabs(); } }, l)));
+    clear(tabsEl).append([['upload', 'Excel / CSV / PDF yükle', 'dx-tab-upload'], ['grid', 'Satır satır gir / düzenle', 'dx-tab-grid']].map(([id, l, tid]) => h('button', { id: tid, class: st.tab === id ? 'active' : '', onclick: () => { st.tab = id; drawTabs(); } }, l)));
     clear(pane).append(st.tab === 'upload' ? uploadPane : gridPane); if (st.tab === 'upload') drawSummary(); else drawGrid();
   };
   drawTabs();

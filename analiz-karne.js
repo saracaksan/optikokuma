@@ -16,9 +16,37 @@ const krChart = el => { const d = el.querySelector && el.querySelector('.vz-deta
 const krKpi = (v, l, sub) => h('div', { class: 'kr-kpi' }, h('b', null, v == null || v === '' ? '–' : v), h('span', null, l), sub ? h('i', null, sub) : null);
 const krHead = (title, school) => h('header', { class: 'kr-hd' }, h('div', { class: 'kr-sch' }, h('b', null, school ? school.okulAdi : 'Okul'), h('span', null, school ? [school.ilce, school.il].filter(Boolean).join(' / ') : '')), h('div', { class: 'kr-ttl' }, title), h('div', { class: 'kr-dt' }, krDate()));
 const krRange = exams => (exams.length ? `${exams.length} sınav` + (exams[0].date && exams[exams.length - 1].date ? ` (${anFmtDate(exams[0].date)} – ${anFmtDate(exams[exams.length - 1].date)})` : '') : '');
-const krFoot = who => h('footer', { class: 'kr-ft' }, h('div', { class: 'kr-sign' }, h('span', null, who ? who[0] : 'Sınıf rehber öğretmeni'), h('span', null, who ? who[1] : 'Okul müdürü')), h('div', { class: 'kr-gen' }, 'OptiNet sınav analiz sistemiyle hazırlanmıştır · ' + krDate()));
+const krFoot = who => h('footer', { class: 'kr-ft' }, h('div', { class: 'kr-sign' }, h('span', null, who ? who[0] : 'Sınıf rehber öğretmeni'), h('span', null, who ? who[1] : 'Okul müdürü')), h('div', { class: 'kr-gen' }, 'Sıraç Aksan Optik Okuma · Telif Hakkı © Sıraç AKSAN (İzinsiz kopyalamak veya telif atmak ayıptır) · ' + krDate()));
 /** Ders başarısı çubuğu: dolgu öğrencinin yüzdesi, dikey çizgi sınıf ortalaması. */
 const krBar = (p, c) => h('div', { class: 'kr-bar', title: `Başarı %${p == null ? '–' : nf(p, 1)}${c != null ? ' · sınıf ortalaması %' + nf(c, 1) : ''}` }, p != null ? h('u', { style: { width: Math.max(0, Math.min(100, p)) + '%' } }) : null, c != null ? h('i', { style: { left: Math.max(0, Math.min(100, c)) + '%' } }) : null);
+
+
+/** Çoklu sınav (tek ders + çok ders dahil) profesyonel gelişim yorumu üretir. */
+function krProComment(m, exams) {
+  const took = m.taken, pcs = took.map(p => p.pct).filter(v => v != null), les = (m.les || []).filter(l => l.pct != null);
+  const parts = [];
+  if (pcs.length >= 2) {
+    const first = pcs[0], last = pcs[pcs.length - 1], diff = last - first, slope = ogSlope(pcs);
+    const meanP = ogMean(pcs), sd = Math.sqrt(pcs.reduce((s, v) => s + (v - meanP) * (v - meanP), 0) / pcs.length);
+    const trendTxt = diff > 3 ? `belirgin bir yükseliş (${ogSgn(diff, 1, ' puan')})` : diff < -3 ? `düşüş eğilimi (${ogSgn(diff, 1, ' puan')})` : `dengeli bir seyir (${ogSgn(diff, 1, ' puan')})`;
+    const stabTxt = sd <= 6 ? 'istikrarlı bir performans' : sd <= 12 ? 'orta düzeyde dalgalı bir performans' : 'sınavdan sınava dalgalanan bir performans';
+    parts.push(`Seçilen ${took.length} sınavda %${nf(first, 1)} → %${nf(last, 1)} ile ${trendTxt} ve ${stabTxt} sergilemektedir (ortalama %${nf(meanP, 1)}).`);
+  } else if (pcs.length === 1) {
+    parts.push(`Seçilen sınavda %${nf(pcs[0], 1)} genel başarı elde etmiştir.`);
+  }
+  if (les.length >= 2) {
+    const sorted = les.slice().sort((a, b) => b.pct - a.pct);
+    const top = sorted[0], low = sorted[sorted.length - 1];
+    parts.push(`Ders bazında en güçlü alanı ${top.name} (%${nf(top.pct, 1)}), öncelikli desteklenmesi gereken alanı ${low.name} (%${nf(low.pct, 1)}) dersidir.`);
+  } else if (les.length === 1) {
+    parts.push(`${les[0].name} dersinde ortalama %${nf(les[0].pct, 1)} başarı görülmektedir.`);
+  }
+  const hasSingle = exams.some(e => (e.lessons || []).length === 1), hasMulti = exams.some(e => (e.lessons || []).length > 1);
+  if (hasSingle && hasMulti) {
+    parts.push('Tek derslik konu sınavları ile çok dersli denemeler ders bazında aynı ölçekte (% başarı) karşılaştırılmıştır.');
+  }
+  return parts.join(' ');
+}
 
 /* ---------------------------------------------------------------- öğrenci karnesi (tek sayfa) */
 function krStudentPage(m, exams, school, opt) {
@@ -41,10 +69,17 @@ function krStudentPage(m, exams, school, opt) {
     return h('tr', null, h('td', { class: 'nowrap' }, anFmtDate(p.n.date)), h('td', null, p.n.name), h('td', { class: 'num' }, p.r.D ?? ''), h('td', { class: 'num' }, p.r.Y ?? ''), h('td', { class: 'num' }, p.r.B ?? ''), h('td', { class: 'num' }, h('b', null, nf(p.r.net))), hasPuan ? h('td', { class: 'num', title: p.n.puanAdi || 'Puan' }, p.r.puan == null ? '' : nf(p.r.puan, 1)) : null,
       h('td', { class: 'num', style: snHeat(p.pct, p.cls.pct) }, h('b', null, ogP(p.pct))), h('td', { class: 'num' }, ogP(p.cls.pct)), h('td', { class: 'num' }, d == null ? '' : ogSgn(d, 1)), opt.rank ? [rkc(r.snf, r.snfN), rkc(r.okul, r.okulN)] : null);
   });
-  page.append(sec('Sınav sonuçları', h('table', { class: 'kr-table' }, h('thead', null, h('tr', null, head.map((x, i) => h('th', { class: i > 1 ? 'num' : '' }, x)))), h('tbody', null, rows))));
-  if (lessons.length) page.append(sec('Ders ders başarı', h('table', { class: 'kr-table' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), ['Ort. D', 'Ort. Y', 'Ort. B', 'Ort. net', 'Başarı %'].map(x => h('th', { class: 'num' }, x)), h('th', { class: 'kr-barcol' }, 'Başarı (çizgi: sınıf ort.)'), ['Sınıf ort. %', 'Fark'].map(x => h('th', { class: 'num' }, x)), h('th', null, 'Gidiş'))),
+  page.append(sec('Sınav sonuçları', h('table', { class: 'kr-table zebra-tbl' }, h('thead', null, h('tr', null, head.map((x, i) => h('th', { class: i > 1 ? 'num' : '' }, x)))), h('tbody', null, rows))));
+  if (lessons.length) page.append(sec('Ders ders başarı', h('table', { class: 'kr-table zebra-tbl' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), ['Ort. D', 'Ort. Y', 'Ort. B', 'Ort. net', 'Başarı %'].map(x => h('th', { class: 'num' }, x)), h('th', { class: 'kr-barcol' }, 'Başarı (çizgi: sınıf ort.)'), ['Sınıf ort. %', 'Fark'].map(x => h('th', { class: 'num' }, x)), h('th', null, 'Gidiş'))),
     h('tbody', null, lessons.map(l => { const d = l.pct != null && l.clsPct != null ? l.pct - l.clsPct : null; return h('tr', null, h('td', null, h('span', { class: 'vz-key vz-b' + l.slot }), ' ', l.name), h('td', { class: 'num' }, nf(l.D, 1)), h('td', { class: 'num' }, nf(l.Y, 1)), h('td', { class: 'num' }, nf(l.B, 1)), h('td', { class: 'num' }, nf(l.net)), h('td', { class: 'num', style: snHeat(l.pct, l.clsPct) }, h('b', null, ogP(l.pct))), h('td', { class: 'kr-barcol' }, krBar(l.pct, l.clsPct)), h('td', { class: 'num' }, ogP(l.clsPct)), h('td', { class: 'num' }, d == null ? '' : ogSgn(d, 1)), h('td', null, anSpark(l.rows.map(x => (x ? x.pct : null))))); })))));
-  if (opt.notes) { const notes = ogNotes(m).slice(0, 6); if (notes.length) page.append(sec('Değerlendirme', h('ul', { class: 'kr-notes' }, notes.map(t => h('li', null, t))))); }
+  if (opt.notes) {
+    const pro = krProComment(m, exams), notes = ogNotes(m).slice(0, 5);
+    if (pro || notes.length) {
+      page.append(sec('Profesyonel Gelişim Değerlendirmesi',
+        pro ? h('div', { class: 'karne-comment' }, h('b', null, 'Genel Yorum: '), pro) : null,
+        notes.length ? h('ul', { class: 'kr-notes' }, notes.map(t => h('li', null, t))) : null));
+    }
+  }
   page.append(krFoot());
   return page;
 }
@@ -61,10 +96,10 @@ function krReportPages(exams, roster, cls, opt) {
     h('div', { class: 'kr-id kr-id3' }, h('div', null, h('span', null, 'Kapsam'), h('b', null, name)), h('div', null, h('span', null, 'Öğrenci'), h('b', null, `${taken.length} / ${rosterN} sınava girdi`)), h('div', null, h('span', null, 'Sınavlar'), h('b', null, krRange(exams)))),
     h('div', { class: 'kr-kpis' }, krKpi(ogP(ogMean(gp)), 'ortalama başarı', cls ? 'okul ' + ogP(ogMean(op)) : ''), krKpi(li >= 0 ? ogP(gp[li]) : '', 'son sınav ortalaması', dL != null ? `${dL > 0 ? '▲' : dL < 0 ? '▼' : '＝'} ${ogSgn(dL, 1, ' puan')}` : ''), krKpi(slope != null ? ogSgn(slope, 1, ' puan') : '', 'sınav başına değişim', ogTrendWord(slope)), krKpi(bi >= 0 ? ogP(gp[bi]) : '', 'en iyi sınav', bi >= 0 ? ksCut(exams[bi].name, 18) : ''), krKpi(ogMean(part) != null ? '%' + nf(ogMean(part), 0) : '', 'ortalama katılım'), krKpi(taken.length ? `%${nf(hi60 / taken.length * 100, 0)} / %${nf(lo40 / taken.length * 100, 0)}` : '', 'ort. %60+ / %40 altı', `${hi60} / ${lo40} öğrenci`)));
   if (opt.chart) p1.append(sec('Sınav sınav başarı (%)', krChart(AnViz.line({ h: 190, labels: L, sub: S, full: F, label: name + ' gelişimi', fmt: v => nf(v, 1) + '%', yFmt: v => nf(v, 0) + '%', floor: 0, ceil: 100, series: snGroupSeries(exams, classes, cls, (n, s) => snGV(n, s, 'pct', sc)) }))));
-  p1.append(sec('Sınav sonuçları', h('table', { class: 'kr-table' }, h('thead', null, h('tr', null, ['Tarih', 'Sınav'].map(x => h('th', null, x)), ['Katılan', 'Katılım', 'Ort. başarı', 'Değişim'].concat(cls ? ['Okul ort.'] : [], ['En yüksek', 'En düşük']).map(x => h('th', { class: 'num' }, x)))),
+  p1.append(sec('Sınav sonuçları', h('table', { class: 'kr-table zebra-tbl' }, h('thead', null, h('tr', null, ['Tarih', 'Sınav'].map(x => h('th', null, x)), ['Katılan', 'Katılım', 'Ort. başarı', 'Değişim'].concat(cls ? ['Okul ort.'] : [], ['En yüksek', 'En düşük']).map(x => h('th', { class: 'num' }, x)))),
     h('tbody', null, exams.map((n, i) => { const v = snRowsOf(n, cls).map(r => ogPct(r.net, n.totalQ)).filter(x => x != null), p = i ? snPrevIdx(gp, i) : -1, d = p >= 0 && gp[i] != null ? gp[i] - gp[p] : null; return h('tr', null, h('td', { class: 'nowrap' }, anFmtDate(n.date)), h('td', null, n.name), h('td', { class: 'num' }, snRowsOf(n, cls).length), h('td', { class: 'num' }, part[i] == null ? '' : '%' + nf(part[i], 0)), h('td', { class: 'num', style: snHeat(gp[i], ogMean(gp)) }, h('b', null, ogP(gp[i]))), h('td', { class: 'num' }, d == null ? '' : ogSgn(d, 1, ' puan')), cls ? h('td', { class: 'num' }, ogP(op[i])) : null, h('td', { class: 'num' }, v.length ? ogP(Math.max(...v)) : ''), h('td', { class: 'num' }, v.length ? ogP(Math.min(...v)) : '')); })))));
   if (lm.length) { const gA = lm.map(x => ogMean(exams.map(n => snLV(n, cls, x.nk)))), oA = lm.map(x => ogMean(exams.map(n => snLV(n, '', x.nk))));
-    p1.append(sec('Ders ders başarı (ortalama %)', h('table', { class: 'kr-table' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), h('th', { class: 'num' }, 'Ort. başarı'), h('th', { class: 'kr-barcol' }, 'Başarı' + (cls ? ' (çizgi: okul ort.)' : '')), cls ? [h('th', { class: 'num' }, 'Okul ort.'), h('th', { class: 'num' }, 'Fark')] : null, h('th', null, 'Gidiş'))),
+    p1.append(sec('Ders ders başarı (ortalama %)', h('table', { class: 'kr-table zebra-tbl' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), h('th', { class: 'num' }, 'Ort. başarı'), h('th', { class: 'kr-barcol' }, 'Başarı' + (cls ? ' (çizgi: okul ort.)' : '')), cls ? [h('th', { class: 'num' }, 'Okul ort.'), h('th', { class: 'num' }, 'Fark')] : null, h('th', null, 'Gidiş'))),
       h('tbody', null, lm.map((x, i) => { const d = cls && gA[i] != null && oA[i] != null ? gA[i] - oA[i] : null; return h('tr', null, h('td', null, h('span', { class: 'vz-key vz-b' + x.slot }), ' ', x.name), h('td', { class: 'num' }, h('b', null, ogP(gA[i]))), h('td', { class: 'kr-barcol' }, krBar(gA[i], cls ? oA[i] : null)), cls ? [h('td', { class: 'num' }, ogP(oA[i])), h('td', { class: 'num', style: snHeat(d, 0, 15) }, d == null ? '' : ogSgn(d, 1))] : null, h('td', null, anSpark(exams.map(n => snLV(n, cls, x.nk))))); }))))); }
   if (opt.notes) { const notes = []; if (li >= 0) { const f0 = snFirstIdx(gp); notes.push(f0 !== li ? `${name} ortalama başarısı: ${ogP(gp[f0])} → ${ogP(gp[li])} (${ogSgn(gp[li] - gp[f0], 1, ' puan')}); ${ogTrendWord(slope)}.` : `${name} ortalama başarısı ${ogP(gp[li])}.`); }
     const lv = lm.map(x => ({ x, v: ogMean(exams.map(n => snLV(n, cls, x.nk))) })).filter(o => o.v != null).sort((a, b) => b.v - a.v); if (lv.length >= 2) notes.push(`En güçlü ders: ${lv[0].x.name} (${ogP(lv[0].v)}); en zayıf ders: ${lv[lv.length - 1].x.name} (${ogP(lv[lv.length - 1].v)}).`);
@@ -77,13 +112,13 @@ function krReportPages(exams, roster, cls, opt) {
   // --- 2. sayfa: sınıf raporunda öğrenci listesi; okul raporunda sınıf listesi
   const p2 = h('section', { class: 'kr-page kr-list', 'data-kind': 'liste' }, krHead((cls ? 'SINIF ÖĞRENCİ LİSTESİ' : 'SINIF LİSTESİ') + ' · ' + name, school));
   if (cls) {
-    p2.append(h('table', { class: 'kr-table kr-wide' }, h('thead', null, h('tr', null, ['Sıra', 'Ö.No', 'Ad Soyad'].map(x => h('th', null, x)), h('th', { class: 'num' }, 'Sınav'), exams.map((n, i) => h('th', { class: 'num', title: F[i] }, L[i])), ['Ort. %', 'Son değ.'].map(x => h('th', { class: 'num' }, x)))),
+    p2.append(h('table', { class: 'kr-table kr-wide zebra-tbl' }, h('thead', null, h('tr', null, ['Sıra', 'Ö.No', 'Ad Soyad'].map(x => h('th', null, x)), h('th', { class: 'num' }, 'Sınav'), exams.map((n, i) => h('th', { class: 'num', title: F[i] }, L[i])), ['Ort. %', 'Son değ.'].map(x => h('th', { class: 'num' }, x)))),
       h('tbody', null, ranked.map(s => h('tr', null, h('td', { class: 'num' }, s.rank), h('td', { class: 'nowrap' }, s.no), h('td', null, s.ad || '(adı yok)'), h('td', { class: 'num' }, `${s.took}/${nEx}`), s.pct.map((v, i) => h('td', { class: 'num', style: snHeat(v, gp[i]) }, v == null ? '' : nf(v, 0))), h('td', { class: 'num' }, h('b', null, ogP(s.avg))), h('td', { class: 'num' }, s.dLast == null ? '' : ogSgn(s.dLast, 1)))))));
     if (!ranked.length) p2.append(h('p', { class: 'muted' }, 'Bu sınıftan sınava giren öğrenci yok.'));
     p2.append(h('p', { class: 'kr-cap' }, 'Hücreler başarı yüzdesidir; renk sınıf ortalamasına göre farkı gösterir (mavi: üstünde, kırmızı: altında). Sıra, girilen sınavların ortalamasına göredir.'));
   } else {
     const cr = classes.map(c => { const ps = exams.map(n => snGV(n, c, 'pct', sc)), rn = Array.from(roster.values()).filter(s => s.sinif === c).length; return { c, rn, took: all.filter(s => s.sinif === c && s.took > 0).length, ps, avg: ogMean(ps) }; }).sort((a, b) => (b.avg == null ? -1 : b.avg) - (a.avg == null ? -1 : a.avg));
-    p2.append(h('table', { class: 'kr-table kr-wide' }, h('thead', null, h('tr', null, h('th', { class: 'num' }, 'Sıra'), h('th', null, 'Sınıf'), h('th', { class: 'num' }, 'Öğrenci'), exams.map((n, i) => h('th', { class: 'num', title: F[i] }, L[i])), h('th', { class: 'num' }, 'Ort. %'))),
+    p2.append(h('table', { class: 'kr-table kr-wide zebra-tbl' }, h('thead', null, h('tr', null, h('th', { class: 'num' }, 'Sıra'), h('th', null, 'Sınıf'), h('th', { class: 'num' }, 'Öğrenci'), exams.map((n, i) => h('th', { class: 'num', title: F[i] }, L[i])), h('th', { class: 'num' }, 'Ort. %'))),
       h('tbody', null, cr.map((r, i) => h('tr', null, h('td', { class: 'num' }, i + 1), h('td', null, h('b', null, r.c)), h('td', { class: 'num' }, r.took === r.rn ? r.rn : `${r.took}/${r.rn}`), r.ps.map((v, k) => h('td', { class: 'num', style: snHeat(v, op[k]) }, v == null ? '' : nf(v, 1))), h('td', { class: 'num' }, h('b', null, ogP(r.avg))))))));
     p2.append(h('p', { class: 'kr-cap' }, 'Hücreler sınıfın o sınavdaki ortalama başarı yüzdesidir; renk okul ortalamasına göre farkı gösterir.'));
   }

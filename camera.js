@@ -4,9 +4,9 @@
 
 const Camera = (function () {
   const WORK = 640;            // canlı analiz için kare boyutu (uzun kenar)
-  const TICK = 120;            // analiz aralığı (ms)
-  const HOLD = 6;              // sabit kalması gereken ardışık kare sayısı (~0,8 sn)
-  const EDGE = 0.015;          // köşe kadraj kenarına bu orandan yakınsa "uzaklaşın"
+  const TICK = 80;             // hızlı analiz aralığı (ms)
+  const HOLD = 3;              // yeşil kilitlenme için gereken ardışık kare (~0,25 sn — anında tepki)
+  const EDGE = 0.008;          // köşe kadraj kenarına bu orandan yakınsa "uzaklaşın"
   const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
   /** Köşe dörtgeni için kabul edilen en-boy oranları (tam sayfa ve kesilmiş form) */
@@ -178,23 +178,23 @@ const Camera = (function () {
       root.setAttribute('data-dbg', JSON.stringify({ fill: +fill.toFixed(2), dx: +dx.toFixed(2), dy: +dy.toFixed(2), skew: +skew.toFixed(2), contrast: p.contrast, paper: p.paper, sharp: +p.sharp.toFixed(4), ms: Math.round(S.ms) }));
       let msg = '', icon = '', kind = 'warn', subt = '';
       if (nearEdge) { msg = 'Biraz uzaklaşın'; icon = '⤢'; subt = 'Köşelerden biri kadrajın kenarında.'; }
-      else if (fill < 0.62) { msg = 'Yaklaşın'; icon = '⤡'; subt = 'Form kılavuz çerçeveyi doldursun.'; }
-      else if (fill > 1.08) { msg = 'Biraz uzaklaşın'; icon = '⤢'; subt = 'Form çerçeveden büyük.'; }
-      else if (Math.abs(dx) > 0.07 && Math.abs(dx) >= Math.abs(dy)) { msg = dx > 0 ? 'Sağa kaydırın' : 'Sola kaydırın'; icon = dx > 0 ? '→' : '←'; subt = 'Formu kılavuz çerçevenin ortasına getirin.'; }
-      else if (Math.abs(dy) > 0.07) { msg = dy > 0 ? 'Aşağı kaydırın' : 'Yukarı kaydırın'; icon = dy > 0 ? '↓' : '↑'; subt = 'Formu kılavuz çerçevenin ortasına getirin.'; }
-      else if (skew > 0.14) { msg = 'Telefonu forma paralel tutun'; icon = '◫'; subt = 'Form eğik görünüyor; kamerayı formun tam üstüne alın.'; }
-      else if (p.paper < 95 || p.contrast < 60) { msg = 'Işık yetersiz'; icon = '☀'; subt = 'Daha aydınlık bir yer ya da fener deneyin.'; }
-      else if (p.sharp < 0.0035) { msg = 'Net değil, sabit tutun'; icon = '◌'; subt = 'Kamera odaklanana kadar bekleyin; gerekirse biraz uzaklaşın.'; }
-      if (msg) { S.hist = []; setHint(msg, kind, icon, subt); setBar(0); drawOverlay(f, p, 'warn', 0); return; }
+      else if (fill < 0.45) { msg = 'Yaklaşın'; icon = '⤡'; subt = 'Form kılavuz çerçeveyi biraz daha doldursun.'; }
+      else if (fill > 1.15) { msg = 'Biraz uzaklaşın'; icon = '⤢'; subt = 'Form çerçeveden büyük.'; }
+      else if (Math.abs(dx) > 0.16 && Math.abs(dx) >= Math.abs(dy)) { msg = dx > 0 ? 'Sağa kaydırın' : 'Sola kaydırın'; icon = dx > 0 ? '→' : '←'; subt = 'Formu çerçevenin içine alın.'; }
+      else if (Math.abs(dy) > 0.16) { msg = dy > 0 ? 'Aşağı kaydırın' : 'Yukarı kaydırın'; icon = dy > 0 ? '↓' : '↑'; subt = 'Formu çerçevenin içine alın.'; }
+      else if (skew > 0.24) { msg = 'Telefonu forma paralel tutun'; icon = '◫'; subt = 'Form çok eğik görünüyor; kamerayı üstüne alın.'; }
+      else if (p.paper < 75 || p.contrast < 42) { msg = 'Işık yetersiz'; icon = '☀'; subt = 'Daha aydınlık bir yer ya da fener deneyin.'; }
+      else if (p.sharp < 0.0020) { msg = 'Net değil, kısa bekleyin'; icon = '◌'; subt = 'Kamera odaklanıyor…'; }
+      if (msg) { if (S.hist.length > 0) S.hist.shift(); setHint(msg, kind, icon, subt); setBar(0); drawOverlay(f, p, 'warn', 0); return; }
       if (!S.armed) { setHint('Sonraki formu getirin', 'idle', '✓', 'Bu form okundu. Yeni forma geçince otomatik okunur.'); setBar(0); drawOverlay(f, p, 'ok', 0); return; }
-      // sabitlik
+      // El titremesine dayanıklı hızlı yeşil kilitlenme
       S.hist.push(q.map(a => [a[0], a[1]])); if (S.hist.length > HOLD) S.hist.shift();
       let still = S.hist.length >= 2;
-      if (still) { const ref = S.hist[S.hist.length - 1], lim = Math.hypot(f.w, f.h) * 0.012; for (const hq of S.hist) for (let i = 0; i < 4; i++) if (dist(hq[i], ref[i]) > lim) still = false; }
-      if (!still) { S.hist = S.hist.slice(-1); setHint('Sabit tutun', 'ok', '✓', 'Form doğru yerde.'); setBar(0.15); drawOverlay(f, p, 'ok', 0.15); return; }
+      if (still) { const ref = S.hist[S.hist.length - 1], prev = S.hist[S.hist.length - 2], lim = Math.hypot(f.w, f.h) * 0.032; for (let i = 0; i < 4; i++) if (dist(prev[i], ref[i]) > lim) still = false; }
+      if (!still) { S.hist = S.hist.slice(-1); setHint('Kilitleniyor…', 'ok', '✓', 'Form yakalandı, okunuyor.'); setBar(0.35); drawOverlay(f, p, 'ok', 0.35); return; }
       const prog = S.hist.length / HOLD;
-      setHint(prog >= 1 ? 'Okunuyor…' : 'Sabit tutun…', 'ok', '✓', 'Form doğru yerde, otomatik okunacak.'); setBar(prog); drawOverlay(f, p, 'ok', prog);
-      if (S.hist.length >= HOLD) capture(false);
+      setHint(prog >= 1 ? 'Okunuyor…' : 'Kilitlendi ✓', 'ok', '✓', 'Hızlı okuma devrede.'); setBar(prog); drawOverlay(f, p, 'ok', prog);
+      if (S.hist.length >= HOLD) { try { if (navigator.vibrate) navigator.vibrate(35); } catch (e) { } capture(false); }
     }
 
     /* ---------------------------------------------------------------- çekim ve okuma */
@@ -221,7 +221,7 @@ const Camera = (function () {
           if (best && b >= best.b) rs.forEach(r => { try { ctx.discard && ctx.discard(r); } catch (e) { } });
           else { if (best) best.rs.forEach(r => { try { ctx.discard && ctx.discard(r); } catch (e) { } }); best = { rs, b }; }
           if (best.b === 0 || S.closed) break;
-          await new Promise(r => setTimeout(r, 180));
+          await new Promise(r => setTimeout(r, 100));
         }
         recs = best.rs;
       } catch (e) { recs = [{ error: e.message || 'Okunamadı', status: 'error', flags: [], reasons: [] }]; }

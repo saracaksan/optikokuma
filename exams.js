@@ -1,7 +1,7 @@
 /* exams.js — sınav tanımı: kapsam, puanlama, cevap anahtarı, şablon */
 'use strict';
 
-const SCOPE_LABEL = { genel: 'Genel (tüm okullar)', il: 'İl', ilce: 'İlçe', okul: 'Okul' };
+const SCOPE_LABEL = { genel: 'Genel (tüm okullar)', il: 'İl', ilce: 'İlçe', okul: 'Okul', okullar: 'Seçili okullar (çoklu)' };
 const STATUS = { draft: ['Taslak', ''], open: ['Okutmaya açık', 'ok'], closed: ['Kapalı', 'warn'] };
 const PENALTIES = [['0', 'Yanlış doğruyu götürmez'], ['0.25', '4 yanlış 1 doğruyu götürür (¼)'], ['0.3333333333', '3 yanlış 1 doğruyu götürür (⅓)'], ['0.5', '2 yanlış 1 doğruyu götürür (½)']];
 
@@ -9,6 +9,12 @@ function scopeText(e) {
   if (e.scopeType === 'genel') return SCOPE_LABEL.genel;
   if (e.scopeType === 'ilce') return 'İlçe: ' + String(e.scopeValue).replace('|', ' / ');
   if (e.scopeType === 'okul') { const s = schoolByCode(e.scopeValue); return (e.personal ? 'Kişisel · ' : 'Okul: ') + (s ? s.okulAdi : e.scopeValue); }
+  if (e.scopeType === 'okullar') {
+    const codes = String(e.scopeValue || '').split(',').map(x => x.trim()).filter(Boolean);
+    const names = codes.map(c => { const s = schoolByCode(c); return s ? s.okulAdi : c; });
+    const head = names.slice(0, 2).join(', ') + (names.length > 2 ? ` … (+${names.length - 2})` : '');
+    return `Seçili okullar (${codes.length}): ${head}`;
+  }
   return 'İl: ' + e.scopeValue;
 }
 
@@ -18,7 +24,7 @@ App.views.exams = function (root) {
   function draw() {
     clear(box); const list = S.exams.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
     if (!list.length) { box.append(h('div', { class: 'empty card' }, 'Henüz sınav yok. "Yeni sınav" ile başlayın.')); return; }
-    box.append(h('div', { class: 'card' }, h('div', { class: 'tablewrap' }, h('table', null,
+    box.append(h('div', { class: 'card' }, h('div', { class: 'tablewrap' }, h('table', { class: 'zebra-tbl' },
       h('thead', null, h('tr', null, ['Sınav', 'Tarih', 'Kapsam', 'Soru', 'Durum', ''].map(t => h('th', null, t)))),
       h('tbody', null, list.map(e => { const cfg = examCfg(e), st = STATUS[e.status] || ['?', '']; return h('tr', null,
         h('td', null, h('b', null, e.name), e.personal && e.owner !== u.username ? h('div', { class: 'small muted' }, 'Öğretmen: ' + (e.ownerName || e.owner)) : null), h('td', null, e.date || ''), h('td', null, scopeText(e)), h('td', { class: 'num' }, cfg.total), h('td', null, h('span', { class: 'pill ' + st[1] }, st[0])),
@@ -38,6 +44,7 @@ App.views.exams = function (root) {
   function scopeOptions() {
     const opts = [], sc = S.schools;
     if (u.role === 'admin') opts.push(['genel', '', SCOPE_LABEL.genel]);
+    if (u.role !== 'okul' && u.role !== 'ogretmen' && sc.length > 1) opts.push(['okullar', '', 'Seçili okullar (çoklu tikleme)']);
     if (u.role === 'admin' || u.role === 'il') Array.from(new Set(sc.map(s => s.il))).sort().forEach(il => { if (u.role === 'admin' || il === u.il) opts.push(['il', il, 'İl: ' + il]); });
     if (u.role !== 'okul' && u.role !== 'ogretmen') Array.from(new Set(sc.map(s => s.il + '|' + s.ilce))).sort().forEach(k => opts.push(['ilce', k, 'İlçe: ' + k.replace('|', ' / ')]));
     sc.slice().sort((a, b) => a.okulAdi.localeCompare(b.okulAdi, 'tr')).forEach(s => opts.push(['okul', String(s.okulKodu), 'Okul: ' + s.okulAdi + ' (' + s.ilce + ')']));
@@ -51,9 +58,45 @@ App.views.exams = function (root) {
     const keys = Object.assign({}, cfg0.keys); let booklets = (c0.booklets && c0.booklets.length ? c0.booklets : Object.keys(keys).length ? Object.keys(keys) : ['A']).slice();
     const name = h('input', { type: 'text', id: 'ex-name', value: ex ? ex.name : '', placeholder: 'Örn: 8. Sınıf LGS Deneme 3' }), date = h('input', { type: 'date', value: ex ? ex.date : today() });
     const scopes = scopeOptions(), scopeSel = h('select', null, scopes.map((o, i) => h('option', { value: i }, o[2])));
-    if (ex) { const i = scopes.findIndex(o => o[0] === ex.scopeType && o[1] === String(ex.scopeValue)); if (i >= 0) scopeSel.value = i; }
-    else if ((u.role === 'okul' || u.role === 'ogretmen') && scopes.length) scopeSel.value = 0;
+    const pickedSchools = new Set(ex && ex.scopeType === 'okullar' ? String(ex.scopeValue || '').split(',').map(x => x.trim()).filter(Boolean) : []);
+    if (ex) {
+      const i = ex.scopeType === 'okullar'
+        ? scopes.findIndex(o => o[0] === 'okullar')
+        : scopes.findIndex(o => o[0] === ex.scopeType && o[1] === String(ex.scopeValue));
+      if (i >= 0) scopeSel.value = i;
+    } else if ((u.role === 'okul' || u.role === 'ogretmen') && scopes.length) scopeSel.value = 0;
     if (u.role === 'okul' || u.role === 'ogretmen' || (ex && ex.personal)) scopeSel.disabled = true;
+    // Çoklu okul tikleme kutusu (yönetici / il / ilçe modunda 2, 5, 10 veya istenen sayıda okul seçimi)
+    const msBox = h('div', { class: 'multi-school-box hidden', id: 'ex-multi-schools' });
+    let msVisibleRows = S.schools.slice();
+    function drawMultiSchools() {
+      const o = scopes[+scopeSel.value];
+      const isMulti = !scopeSel.disabled && o && o[0] === 'okullar';
+      msBox.classList.toggle('hidden', !isMulti);
+      if (!isMulti) return;
+      clear(msBox);
+      const cnt = h('span', { class: 'small' }, h('b', null, `Seçili: ${pickedSchools.size} okul`), ' (üstteki il / ilçe / arama süzgecini kullanarak istediğiniz kadar okul tikleyebilirsiniz)');
+      const head = h('div', { class: 'ms-head' }, cnt, h('div', { class: 'row' },
+        h('button', { type: 'button', class: 'btn sm', onclick: () => { msVisibleRows.forEach(s => pickedSchools.add(String(s.okulKodu))); drawMultiSchools(); } }, 'Görünenleri seç'),
+        h('button', { type: 'button', class: 'btn sm ghost', onclick: () => { pickedSchools.clear(); drawMultiSchools(); } }, 'Temizle')));
+      const listEl = h('div', { class: 'ms-list' });
+      const ordered = msVisibleRows.slice().sort((a, b) => a.okulAdi.localeCompare(b.okulAdi, 'tr'));
+      if (!ordered.length) {
+        listEl.append(h('div', { class: 'small muted', style: { padding: '.4rem' } }, 'Bu süzgece uyan okul yok.'));
+      } else {
+        ordered.forEach(s => {
+          const code = String(s.okulKodu), on = pickedSchools.has(code);
+          const ck = h('input', { type: 'checkbox', checked: on, onchange: () => {
+            if (ck.checked) pickedSchools.add(code); else pickedSchools.delete(code);
+            lbl.classList.toggle('on', ck.checked);
+            cnt.firstChild.textContent = `Seçili: ${pickedSchools.size} okul`;
+          } });
+          const lbl = h('label', { class: 'ms-item' + (on ? ' on' : '') }, ck, h('span', null, `${s.okulAdi} `, h('span', { class: 'small muted' }, `(${s.ilce})`)));
+          listEl.append(lbl);
+        });
+      }
+      msBox.append(head, listEl);
+    }
     // Kapsam: il / ilçe / düzey süzgeçleri ortak seçimle gelir (diğer ekranlarla aynı); yeni sınavda kapsam seçili okul → ilçe → il'e göre başlar
     let scopeBox = scopeSel;
     if (!scopeSel.disabled && S.schools.length > 1) {
@@ -62,13 +105,16 @@ App.views.exams = function (root) {
       if (!ex) { if (g.okul) want = scopes.findIndex(o => o[0] === 'okul' && o[1] === g.okul); if (want < 0 && g.ilce) want = scopes.findIndex(o => o[0] === 'ilce' && (g.il ? o[1] === g.il + '|' + g.ilce : o[1].split('|')[1] === g.ilce)); if (want < 0 && g.il) want = scopes.findIndex(o => o[0] === 'il' && o[1] === g.il); }
       if (want >= 0) { scopeSel.value = want; hint.textContent = 'Kapsam, seçili ' + scopes[want][2].replace(/^(Okul|İlçe|İl): /, m => m.toLowerCase()) + ' olarak ayarlandı; değiştirmek için listeden başka kapsam seçin.'; }
       const fillScope = rows => {
+        msVisibleRows = rows.slice();
         const cur = scopeSel.value, codes = new Set(rows.map(s => String(s.okulKodu))), ils = new Set(rows.map(s => s.il)), ilces = new Set(rows.map(s => s.il + '|' + s.ilce));
-        clear(scopeSel).append(scopes.map((o, i) => [i, o]).filter(([, o]) => o[0] === 'genel' || (o[0] === 'il' && ils.has(o[1])) || (o[0] === 'ilce' && ilces.has(o[1])) || (o[0] === 'okul' && codes.has(o[1]))).map(([i, o]) => h('option', { value: i }, o[2])));
+        clear(scopeSel).append(scopes.map((o, i) => [i, o]).filter(([, o]) => o[0] === 'genel' || o[0] === 'okullar' || (o[0] === 'il' && ils.has(o[1])) || (o[0] === 'ilce' && ilces.has(o[1])) || (o[0] === 'okul' && codes.has(o[1]))).map(([i, o]) => h('option', { value: i }, o[2])));
         scopeSel.value = cur; if (scopeSel.value !== cur) scopeSel.selectedIndex = 0;
+        drawMultiSchools();
       };
       const bar = schoolFilterBar(S.schools, fillScope, { keep: want >= 0 && scopes[want][0] === 'okul' ? scopes[want][1] : '' });
       if (want >= 0) scopeSel.value = want;
-      scopeSel.addEventListener('change', () => { const o = scopes[+scopeSel.value]; hint.textContent = ''; if (o && o[0] === 'okul') Sel.set({ okul: o[1] }); });
+      scopeSel.addEventListener('change', () => { const o = scopes[+scopeSel.value]; hint.textContent = ''; if (o && o[0] === 'okul') Sel.set({ okul: o[1] }); drawMultiSchools(); });
+      drawMultiSchools();
       scopeBox = h('div', { class: 'sp' }, bar.any ? bar.el : null, scopeSel, hint);
     }
     const preset = h('select', { onchange: () => { const e = Katalog.byId(preset.value); if (e) applyEntry(e, true); } },
@@ -183,6 +229,7 @@ App.views.exams = function (root) {
     if (init && init.entryId) { const e = Katalog.byId(init.entryId); if (e) { preset.value = e.group !== 'tek' ? e.id : ''; applyEntry(e, true); if (init.nup) stdNup.value = init.nup; if (init.d != null) stdD.value = init.d; stdSd.value = init.sd || 0; drawStd(); } }
     const body = h('div', null,
       h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Sınav adı'), name), h('div', { class: 'field' }, h('label', null, 'Tarih'), date), h('div', { class: 'field' }, h('label', null, 'Kapsam (hangi okullar katılır)'), scopeBox)),
+      msBox,
       u.role === 'ogretmen' ? h('p', { class: 'small muted' }, 'Bu sınav kişiseldir: yalnızca siz ve okul yöneticiniz görür; aynı okuldaki diğer öğretmenler ve ilçe/il yetkilileri göremez.') : h('p', { class: 'small muted' }, 'Aynı sınavı birden çok okul okutur; sonuçlar tek havuzda toplanır ve okullar/ilçeler birbiriyle karşılaştırılır.'),
       h('h3', { style: { marginTop: '1rem' } }, 'Puanlama'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Hazır ayar'), preset), h('div', { class: 'field' }, h('label', null, 'Şık sayısı'), choices), h('div', { class: 'field' }, h('label', null, 'Net kuralı'), pen), h('div', { class: 'field' }, h('label', null, 'Puan yöntemi'), methodSel)), methodBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Ders / bölümler ve katsayılar'), secBox,
@@ -194,6 +241,11 @@ App.views.exams = function (root) {
     const dlg = modal(isNew ? 'Yeni sınav' : 'Sınavı düzenle', body, { size: 'wide', noBackdrop: true, buttons: [{ label: 'Vazgeç' }, { label: 'Kaydet', cls: 'primary', fn: async () => {
       clear(err); const sc = scopes[+scopeSel.value]; if (!name.value.trim()) { err.append(h('div', { class: 'alert bad' }, 'Sınav adı gerekli.')); return false; }
       if (!sc) { err.append(h('div', { class: 'alert bad' }, 'Kapsam seçin (önce Yönetim → Okullar bölümünden okul ekleyin).')); return false; }
+      let scopeVal = sc[1];
+      if (sc[0] === 'okullar') {
+        if (!pickedSchools.size) { err.append(h('div', { class: 'alert bad' }, 'Çoklu okul seçimi için en az bir okul işaretleyin.')); return false; }
+        scopeVal = Array.from(pickedSchools).join(',');
+      }
       if (sections.some(s => !s.name.trim())) { err.append(h('div', { class: 'alert bad' }, 'Bölüm adları boş olamaz.')); return false; }
       let templateId = tplSel.value;
       if (templateId.startsWith('std:')) {
@@ -218,7 +270,7 @@ App.views.exams = function (root) {
       const config = { sections: sections.map(s => ({ name: s.name.trim(), count: s.count, coef: s.coef })), choices: +choices.value, penalty: parseFloat(pen.value), method: methodSel.value, base: parseFloat(base.value), max: parseFloat(max.value), a: parseFloat(ca.value) || 0, b: parseFloat(cb.value) || 1,
         keys: flat, booklets, templateId, formMap: useMap ? mapSpec() : undefined, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
       try {
-        const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: sc[1], status: status.value, config }, allowIssues: status.value !== 'open' });
+        const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: scopeVal, status: status.value, config }, allowIssues: status.value !== 'open' });
         await refreshBase(); draw(); toast('Sınav kaydedildi', 'ok');
         if (r.issues && r.issues.length) toast('Uyarı: ' + r.issues[0], 'bad');
       } catch (e) { err.append(h('div', { class: 'alert bad' }, e.message)); return false; }

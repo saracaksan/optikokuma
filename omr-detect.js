@@ -20,7 +20,7 @@
   const mean = a => a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0;
   const median = a => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
   const r2 = v => Math.round(v * 100) / 100;
-  const LEVELS = [[0.78, 170], [0.86, 200], [0.92, 225]];   // adaptif eşik duyarlılığı: [ortalamaya oran, mutlak üst sınır]
+  const LEVELS = [[0.78, 170], [0.86, 200], [0.92, 225], [0.95, 238]];   // adaptif eşik duyarlılığı: [ortalamaya oran, mutlak üst sınır] (4. seviye: silik baskı/PDF)
   const DIGITS = '0123456789', LETTERS = 'ABCDEFGH';
 
   /* ------------------------------------------------------------------ görüntü işleme */
@@ -421,12 +421,12 @@
     opts = opts || {};
     const maxDim = Math.max(w, h), exp = opts.expect || null;
     const minD = exp ? Math.max(4, Math.min(exp.w, exp.h) * 0.68) : Math.max(7, maxDim * 0.0045), maxD = exp ? Math.max(exp.w, exp.h) * 1.45 : maxDim * 0.05;
-    const levels = opts.level != null ? [opts.level] : (exp ? [1] : [0, 1, 2]);
+    const levels = opts.level != null ? [opts.level] : (exp ? [1, 2] : [0, 1, 2, 3]);
     let best = null;
     for (const lv of levels) {
       const bin = binarize(g, w, h, LEVELS[lv][0], LEVELS[lv][1]), blobs = OMR.findBlobs(bin, w, h, Math.max(6, minD * minD * 0.08), maxD * maxD);
       let cand = blobs.filter(b => !b.touches && b.bw >= minD && b.bh >= minD && b.bw <= maxD && b.bh <= maxD && b.bw / b.bh > 0.4 && b.bw / b.bh < 2.5 && b.fill > 0.1);
-      cand = cand.filter(b => ringCover(bin, w, h, b) >= 0.75);
+      cand = cand.filter(b => ringCover(bin, w, h, b) >= (lv >= 2 ? 0.62 : 0.72));
       if (opts.exclude) cand = cand.filter(b => !opts.exclude.some(e => Math.hypot(b.cx - e.x, b.cy - e.y) < e.r));
       let list, bw, bh, extra = [];
       if (exp) { list = cand.filter(b => Math.abs(b.bw - exp.w) <= exp.w * 0.32 && Math.abs(b.bh - exp.h) <= exp.h * 0.32); bw = exp.w; bh = exp.h; }
@@ -444,6 +444,30 @@
   }
 
   /* ------------------------------------------------------------------ yapı çıkarma */
+  /** Sabit aralıklı doğrusal ızgara düzenleyici: eksik/silik satırları (örn. 12. satır) tam aralığına tamamlar,
+   *  baloncuk kaymasını ve alt satırların üst üste sıkışmasını önler. */
+  function regularizeAxis_(vals) {
+    if (!vals || vals.length < 3) return vals;
+    const s = vals.slice().sort((a, b) => a - b);
+    const diffs = [];
+    for (let i = 1; i < s.length; i++) diffs.push(s[i] - s[i - 1]);
+    const pitch = median(diffs);
+    if (!(pitch > 2)) return s;
+    const idx = s.map(v => Math.round((v - s[0]) / pitch));
+    const maxI = idx[idx.length - 1];
+    // Aynı indekse çakışan veya aşırı boşluklu (ayrı blok olabilecek) durumları zorlama
+    for (let i = 1; i < idx.length; i++) if (idx[i] <= idx[i - 1]) return s;
+    if (maxI + 1 > s.length + Math.max(4, Math.floor(s.length * 0.35))) return s;
+    // En küçük kareler doğrusal fit: y(k) = a + b * k
+    const n = s.length, mx = mean(idx), my = mean(s);
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { const dx = idx[i] - mx; num += dx * (s[i] - my); den += dx * dx; }
+    if (!(den > 0)) return s;
+    const b = num / den, a = my - b * mx;
+    for (let i = 0; i < n; i++) if (Math.abs(s[i] - (a + b * idx[i])) > 0.38 * pitch) return s;
+    return Array.from({ length: maxI + 1 }, (_, k) => r2(a + b * k));
+  }
+
   function cluster1d(vals, tol) {
     const idx = vals.map((_, i) => i).sort((a, b) => vals[a] - vals[b]), cl = []; let cur = null;
     idx.forEach(i => { if (cur && vals[i] - cur.last <= tol) { cur.m.push(i); cur.last = vals[i]; } else { cur = { m: [i], last: vals[i] }; cl.push(cur); } });
@@ -476,11 +500,15 @@
       const cx = cluster1d(mem.map(i => P[i].cx), tolX), cy = cluster1d(mem.map(i => P[i].cy), tolY), rows = cy.centers.length, cols = cx.centers.length;
       const occ = new Set(); mem.forEach((_, k) => occ.add(cy.as[k] * 1000 + cx.as[k]));
       if (mem.length < 3 && !(rows === 1 || cols === 1)) return;
-      const xs = cx.centers.map((_, c) => mean(mem.filter((_, k) => cx.as[k] === c).map(i => P[i].cx))), ys = cy.centers.map((_, r) => mean(mem.filter((_, k) => cy.as[k] === r).map(i => P[i].cy)));
-      const missing = []; for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (!occ.has(r * 1000 + c)) missing.push([r, c]);
-      const cells = mem.map((i, k) => ({ r: cy.as[k], c: cx.as[k], cx: P[i].cx, cy: P[i].cy }));
+      const xsRaw = cx.centers.map((_, c) => mean(mem.filter((_, k) => cx.as[k] === c).map(i => P[i].cx))), ysRaw = cy.centers.map((_, r) => mean(mem.filter((_, k) => cy.as[k] === r).map(i => P[i].cy)));
+      const xs = regularizeAxis_(xsRaw), ys = regularizeAxis_(ysRaw);
+      const rN = ys.length, cN = xs.length;
+      const nearIdx = (arr, v) => { let bi = 0, bd = 1e9; for (let t = 0; t < arr.length; t++) { const d = Math.abs(arr[t] - v); if (d < bd) { bd = d; bi = t; } } return bi; };
+      const occ2 = new Set(), cells = [];
+      mem.forEach(i => { const rr = nearIdx(ys, P[i].cy), cc = nearIdx(xs, P[i].cx); occ2.add(rr * 1000 + cc); cells.push({ r: rr, c: cc, cx: P[i].cx, cy: P[i].cy }); });
+      const missing = []; for (let r = 0; r < rN; r++) for (let c = 0; c < cN; c++) if (!occ2.has(r * 1000 + c)) missing.push([r, c]);
       const cv = v => { if (v.length < 3) return 0; const d = v.slice(1).map((x, i) => x - v[i]), m = mean(d); return m > 0 ? Math.sqrt(mean(d.map(x => (x - m) * (x - m)))) / m : 0; };   // aralık düzensizliği (değişim katsayısı)
-      blocks.push({ rows, cols, xs, ys, n: occ.size, fill: occ.size / (rows * cols), missing, x0: xs[0], x1: xs[cols - 1], y0: ys[0], y1: ys[rows - 1], cells, cvX: cv(xs), cvY: cv(ys) });
+      blocks.push({ rows: rN, cols: cN, xs, ys, n: occ2.size, fill: occ2.size / (rN * cN), missing, x0: xs[0], x1: xs[cN - 1], y0: ys[0], y1: ys[rN - 1], cells, cvX: cv(xs), cvY: cv(ys) });
     });
     return { blocks: blocks.map(trimEdges), pitchX: median(gapR.filter(v => v < INF)), pitchY: median(gapD.filter(v => v < INF)) };
   }
@@ -727,13 +755,13 @@
   function resizeBubbles(b, d, bubbles) { b.bw = Math.max(4, r2(b.bw + d)); b.bh = Math.max(4, r2(b.bh + d)); return touch(b, bubbles); }
 
   /** Izgarayı gerçek baloncuklara oturtur: önce en iyi örtüşen küçük kaydırmayı arar (en çok ±1 aralık), sonra her sütun/satırı komşu baloncukların ortalamasına çeker.
-   *  Dönüş: { before, after, dx, dy, total } (örtüşen hücre sayıları). Baloncuk yoksa değişiklik yapmaz. */
-  function snapBlock(b, bubbles) {
+   *  Dönüş: { before, after, dx, dy, total } (örtüşen hücre sayıları). Baloncuk yoksa değişiklik yapmaz. opts.range: arama aralığı (ızgara aralığının katı, varsayılan 1). */
+  function snapBlock(b, bubbles, opts) {
     const total = b.rows * b.cols, tol = 0.5 * Math.min(b.bw, b.bh);
     const score = (dx, dy) => { let s = 0; for (let r = 0; r < b.rows; r++) for (let c = 0; c < b.cols; c++) if (nearestBubble(bubbles, b.xs[c] + dx, b.ys[r] + dy, tol)) s++; return s; };
     if (!bubbles || !bubbles.length) return { before: 0, after: 0, dx: 0, dy: 0, total };
     const before = score(0, 0);
-    const gx = b.cols > 1 ? (b.x1 - b.x0) / (b.cols - 1) : 1.6 * b.bw, gy = b.rows > 1 ? (b.y1 - b.y0) / (b.rows - 1) : 1.6 * b.bh, st = Math.max(1, 0.25 * Math.min(b.bw, b.bh)); let best = { s: before, dx: 0, dy: 0, d: 0 };
+    const rg = (opts && opts.range) || 1, gx = rg * (b.cols > 1 ? (b.x1 - b.x0) / (b.cols - 1) : 1.6 * b.bw), gy = rg * (b.rows > 1 ? (b.y1 - b.y0) / (b.rows - 1) : 1.6 * b.bh), st = Math.max(1, 0.25 * Math.min(b.bw, b.bh)); let best = { s: before, dx: 0, dy: 0, d: 0 };
     if (before < total) for (let dy = -gy; dy <= gy + 1e-6; dy += st) for (let dx = -gx; dx <= gx + 1e-6; dx += st) { const s = score(dx, dy), d = Math.hypot(dx, dy); if (s > best.s || (s === best.s && s > before && d < best.d)) best = { s, dx, dy, d }; }
     b.xs = b.xs.map(v => v + best.dx); b.ys = b.ys.map(v => v + best.dy);
     const bandY0 = b.ys[0] - 0.6 * b.bh, bandY1 = b.ys[b.rows - 1] + 0.6 * b.bh, bandX0 = b.xs[0] - 0.6 * b.bw, bandX1 = b.xs[b.cols - 1] + 0.6 * b.bw;
@@ -741,13 +769,15 @@
       b.xs = b.xs.map(x => { const m = bubblesIn(bubbles, x - tol, bandY0, x + tol, bandY1); return m.length >= Math.min(b.rows, Math.max(1, Math.ceil(0.4 * b.rows))) ? median(m.map(q => q.cx)) : x; });
       b.ys = b.ys.map(y => { const m = bubblesIn(bubbles, bandX0, y - tol, bandX1, y + tol); return m.length >= Math.min(b.cols, Math.max(1, Math.ceil(0.4 * b.cols))) ? median(m.map(q => q.cy)) : y; });
     }
+    if (b.xs.length >= 3) { const rx = regularizeAxis_(b.xs); if (rx.length === b.xs.length) b.xs = rx; }
+    if (b.ys.length >= 3) { const ry = regularizeAxis_(b.ys); if (ry.length === b.ys.length) b.ys = ry; }
     touch(b, bubbles); return { before, after: b.n, dx: r2(best.dx), dy: r2(best.dy), total };
   }
 
   /** Izgara kuran ortak bölüm: merkez listesinden (tek blok, aralık kuralı olmadan) xs/ys çıkarır. */
   function gridBlock(list, bw, bh) {
     const tolX = 0.35 * bw, tolY = 0.35 * bh, cx = cluster1d(list.map(p => p.cx), tolX), cy = cluster1d(list.map(p => p.cy), tolY);
-    const xs = cx.centers.map((_, c) => mean(list.filter((_, k) => cx.as[k] === c).map(p => p.cx))), ys = cy.centers.map((_, r) => mean(list.filter((_, k) => cy.as[k] === r).map(p => p.cy)));
+    const xs = regularizeAxis_(cx.centers.map((_, c) => mean(list.filter((_, k) => cx.as[k] === c).map(p => p.cx)))), ys = regularizeAxis_(cy.centers.map((_, r) => mean(list.filter((_, k) => cy.as[k] === r).map(p => p.cy))));
     const b = { id: 'x', xs, ys, bw, bh, role: 'questions', axis: 'row', name: '', labels: '', conf: 'high', why: '', glyph: '' };
     return refit(b, list);
   }

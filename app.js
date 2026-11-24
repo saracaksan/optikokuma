@@ -68,6 +68,7 @@ function icon(name) {
     exams: '<path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4M10 12h6M10 16h6"/>',
     forms: '<rect x="5" y="3" width="14" height="18" rx="2"/><circle cx="9.5" cy="9" r="1.3"/><circle cx="14.5" cy="9" r="1.3"/><circle cx="9.5" cy="14" r="1.3"/><circle cx="14.5" cy="14" r="1.3"/>',
     admin: '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M17 11a3 3 0 1 0 0-6M21 20c0-2.5-1.6-4.6-4-5.5"/>',
+    guide: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.2 1-1.2 1.8M12 17h.01"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>'
   };
   const s = document.createElement('span'); s.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + (P[name] || '') + '</svg>'; return s.firstChild;
@@ -290,7 +291,14 @@ async function getStudents(okulKodu) {
 }
 function examCfg(ex) { const c = Scoring.normalizeCfg(ex.config || {}); return c; }
 
-const DEFAULT_FOOTER = 'Sıraç AKSAN · OptiNet';
+const DEFAULT_FOOTER = 'Sıraç AKSAN · Sıraç Aksan Optik Okuma';
+const APP_NAME = 'Sıraç Aksan Optik Okuma';
+function saCopyrightFooter() {
+  return h('footer', { class: 'sa-copyright' },
+    h('b', null, 'Telif Hakkı © Sıraç AKSAN'),
+    ' — Sıraç Aksan Optik Okuma. Emeğe saygı gösteriniz; izinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.'
+  );
+}
 const formFooter = () => String(Settings.get('formFooter', DEFAULT_FOOTER) || '');
 
 /** Harici formu sınavın ders/soru yapısına uyarlar (formda 20'şer soruluk bloklar, sınavda farklı sayılar). Birebir uyuyorsa şablon aynen döner. */
@@ -325,7 +333,7 @@ function examFormCode(ex) { try { const t = resolveTemplate(ex).tpl; return t.ki
 /* ------------------------------------------------------------------ kabuk */
 const NAV = [
   { id: 'scan', label: 'Okut', roles: null }, { id: 'queue', label: 'Kuyruk', roles: null }, { id: 'results', label: 'Sonuçlar', roles: null }, { id: 'analiz', label: 'Analiz', roles: null },
-  { id: 'exams', label: 'Sınavlar', roles: null }, { id: 'forms', label: 'Formlar', roles: null }, { id: 'admin', label: 'Yönetim', roles: ['admin', 'il', 'ilce', 'okul'] }, { id: 'settings', label: 'Ayarlar', roles: null }
+  { id: 'exams', label: 'Sınavlar', roles: null }, { id: 'forms', label: 'Formlar', roles: null }, { id: 'admin', label: 'Yönetim', roles: ['admin', 'il', 'ilce', 'okul'] }, { id: 'settings', label: 'Ayarlar', roles: null }, { id: 'guide', label: 'Kılavuz', roles: null }
 ];
 const ROLE_LABEL = { admin: 'Yönetici', il: 'İl yetkilisi', ilce: 'İlçe yetkilisi', okul: 'Okul yöneticisi', ogretmen: 'Öğretmen' };
 /** Bu sınava okutma yapılabilir mi (sunucu aynı kuralı uygular): öğretmen yalnızca kendi sınavına; kişisel sınava yalnızca sahibi. */
@@ -339,19 +347,21 @@ App.updateTopbar = function () {
 };
 
 App.go = function (view) {
-  const S = App.state; S.view = view;
+  const S = App.state; S.view = view; if (view !== 'guide' && typeof Guide !== 'undefined') Guide.state.from = '';
   $$('.nav button').forEach(b => b.classList.toggle('active', b.dataset.id === view));
   const main = $('#main'); if (!main) return; clear(main);
   if (App.cleanup) { try { App.cleanup(); } catch (e) { } App.cleanup = null; }
   try { App.views[view](main); } catch (e) { console.error(e); main.append(h('div', { class: 'alert bad' }, 'Bu sayfa açılırken hata oluştu: ' + e.message)); }
+  main.append(saCopyrightFooter());
   window.scrollTo(0, 0);
 };
 
 App.renderShell = function () {
+  document.title = APP_NAME;
   const S = App.state, u = S.user, app = clear($('#app'));
   const items = NAV.filter(n => !n.roles || n.roles.includes(u.role));
   app.append(h('div', { class: 'shell' },
-    h('div', { class: 'topbar' }, h('span', { class: 'title' }, h('img', { class: 'tb-logo', src: 'icon.svg', alt: '' }), 'OptiNet'), h('span', { id: 'tb-status', class: 'pill' }, ''), Install.topButton(),
+    h('div', { class: 'topbar' }, h('span', { class: 'title' }, h('img', { class: 'tb-logo', src: 'icon.svg', alt: '' }), APP_NAME), h('span', { id: 'tb-status', class: 'pill' }, ''), h('button', { class: 'tb-help no-print', type: 'button', id: 'tb-help', title: 'Bu ekranın kullanım kılavuzu', 'aria-label': 'Kullanım kılavuzu', onclick: () => Guide.openContext() }, '?'), Install.topButton(),
       h('div', { class: 'who' }, h('div', null, u.name || u.username), h('div', { class: 'small' }, ROLE_LABEL[u.role] || u.role))),
     h('nav', { class: 'nav', 'aria-label': 'Ana menü' }, items.map(n => h('button', { 'data-id': n.id, onclick: () => App.go(n.id) }, icon(n.id), h('span', null, n.label), n.id === 'queue' ? h('span', { id: 'nav-badge', class: 'badge hidden' }, '0') : null, n.id === 'admin' ? h('span', { id: 'admin-badge', class: 'badge hidden', title: 'Onay bekleyen başvuru' }, '0') : null))),
     h('main', { id: 'main' })));
@@ -387,12 +397,14 @@ App.renderLogin = function (msg) {
     cfgUrl && getApiUrl() === cfgUrl ? h('details', { class: 'small' }, h('summary', null, 'Sunucu adresi (yöneticiniz tanımladı)'), h('div', { class: 'field', style: { marginTop: '.4rem' } }, url)) : h('div', { class: 'field' }, h('label', { for: 'f-url' }, 'Sunucu adresi (Apps Script)'), url),
     h('div', { class: 'field', style: { marginTop: '.7rem' } }, h('label', { for: 'f-user' }, 'Kullanıcı adı'), un),
     h('div', { class: 'field', style: { margin: '.7rem 0' } }, h('label', { for: 'f-pass' }, 'Parola'), pw), err, btn);
-  app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, 'OptiNet'), h('p', { class: 'center', style: { margin: '-.2rem 0 .6rem', fontWeight: 600, color: 'var(--brand)' } }, 'Optik okuma ve sınav analiz sistemi'),
+  app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, APP_NAME), h('p', { class: 'center', style: { margin: '-.2rem 0 .6rem', fontWeight: 600, color: 'var(--brand)' } }, 'Optik okuma ve sınav analiz sistemi'),
     msg ? h('div', { class: 'alert warn' }, msg) : null, h('div', { class: 'card' }, form),
     Install.card(),
     h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kayit', id: 'f-register' }, 'Üye ol: öğretmen veya okul kaydı')),
     h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/ogrenci', id: 'f-portal' }, 'Öğrenci / veli: sonuç sorgulama')),
-    h('p', { class: 'muted small center' }, 'Okul, ilçe ve il bazlı optik okuma, puanlama ve karşılaştırma.')));
+    h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kilavuz', id: 'f-guide' }, 'Kullanım kılavuzu')),
+    h('p', { class: 'muted small center' }, 'Okul, ilçe ve il bazlı optik okuma, puanlama ve karşılaştırma.'),
+    saCopyrightFooter()));
 };
 
 /* ------------------------------------------------------------------ ayarlar */
