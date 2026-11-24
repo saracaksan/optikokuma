@@ -1,12 +1,10 @@
 /**
- * SIRAÇ AKSAN OPTİK OKUMA — Google Apps Script arka ucu (Sheets = veri tabanı)
- * Telif Hakkı © Sıraç AKSAN — Bu yazılımın tüm hakları Sıraç AKSAN'a aittir.
- * Emeğe saygı gösteriniz; izinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.
+ * OPTİK OKUMA SİSTEMİ — Google Apps Script arka ucu (Sheets = veri tabanı)
  *
  * Kurulum özeti (ayrıntı README.md'de):
  *  1) Yeni bir Google E-Tablo açın → Uzantılar → Apps Script.
  *  2) Code.gs, Scoring.gs ve appsscript.json içeriklerini yapıştırın.
- *  3) E-Tabloyu yenileyin → "Sıraç Aksan Optik Okuma" menüsü → 1) Kurulum, 2) Yönetici oluştur.
+ *  3) E-Tabloyu yenileyin → "Optik Sistem" menüsü → 1) Kurulum, 2) Yönetici oluştur.
  *  4) Dağıt → Yeni dağıtım → Web uygulaması: "Çalıştıran: Ben", "Erişim: Herkes".
  *  5) /exec ile biten adresi PWA'ya girin.
  */
@@ -45,7 +43,7 @@ var IL_LISTESI = ['Adana', 'Adıyaman', 'Afyonkarahisar', 'Ağrı', 'Aksaray', '
 /* ============================ MENÜ / KURULUM ============================ */
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('Sıraç Aksan Optik Okuma')
+  SpreadsheetApp.getUi().createMenu('Optik Sistem')
     .addItem('1) Kurulumu çalıştır', 'setup')
     .addItem('2) Yönetici oluştur', 'createAdminPrompt')
     .addItem('3) Demo veri yükle (isteğe bağlı)', 'seedDemo')
@@ -98,7 +96,7 @@ function howToDeploy() {
 
 /* ============================ HTTP GİRİŞ NOKTALARI ============================ */
 
-function doGet() { return json_({ ok: true, service: 'sirac-aksan-optik-okuma', appName: 'Sıraç Aksan Optik Okuma', copyright: 'Telif Hakkı © Sıraç AKSAN — İzinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.', time: new Date().toISOString() }); }
+function doGet() { return json_({ ok: true, service: 'optik-sistem', time: new Date().toISOString() }); }
 
 function doPost(e) {
   var out;
@@ -346,10 +344,6 @@ function examCovers_(ex, s) {
     case 'il': return s.il === ex.scopeValue;
     case 'ilce': return (s.il + '|' + s.ilce) === ex.scopeValue;
     case 'okul': return String(s.okulKodu) === String(ex.scopeValue);
-    case 'okullar': {
-      var list = String(ex.scopeValue || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-      return list.indexOf(String(s.okulKodu)) >= 0;
-    }
   }
   return false;
 }
@@ -434,13 +428,7 @@ function aListExams(u) {
 
 function validScope_(u, scopeType, scopeValue) {
   if (u.role === 'admin') return true;
-  var sm = schoolMap_();
-  if (scopeType === 'okullar') {
-    var codes = String(scopeValue || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-    if (!codes.length) return false;
-    return codes.every(function (code) { return !!sm[code] && canSeeSchool_(u, sm[code]); });
-  }
-  var ok = false;
+  var sm = schoolMap_(), ok = false;
   for (var k in sm) { var s = sm[k]; if (canSeeSchool_(u, s) && examCovers_({ scopeType: scopeType, scopeValue: scopeValue }, s)) { ok = true; break; } }
   if (!ok) return false;
   // kapsam, kullanıcının yetki alanını aşmamalı
@@ -466,11 +454,6 @@ function aSaveExam(u, p) {
   if (existing && isPersonal_(existing)) { scopeType = 'okul'; scopeValue = String(existing.scopeValue); }   // kişisel sınavın kapsamı sabit (yönetici düzenlese de)
   else if (u.role === 'okul' || u.role === 'ogretmen') { scopeType = 'okul'; scopeValue = String(u.okulKodu); }
   if (scopeType === 'genel') scopeValue = '';
-  if (scopeType === 'okullar') {
-    var seenSc = {}, uniqSc = [];
-    scopeValue.split(',').forEach(function (v) { v = normCode_(v); if (v && !seenSc[v]) { seenSc[v] = 1; uniqSc.push(v); } });
-    scopeValue = uniqSc.join(',');
-  }
   if (!(existing && isPersonal_(existing)) && !validScope_(u, scopeType, scopeValue)) throw fail_('Bu kapsamda sınav oluşturma yetkiniz yok.');
   if (!existing && u.role === 'ogretmen') {
     var mine = table_('Exams').filter(function (e) { return e.owner === u.username; }).length;
@@ -804,63 +787,6 @@ function studentMap_() {
   return m;
 }
 
-
-/**
- * Gerçekçi LGS / Standart Puan (std500) hesabı:
- * Tavan (500 puan) o sınava giren en yüksek öğrenciye değil, TÜM soruları eksiksiz doğru yapan
- * (tam net) kuramsal öğrenciye sabitlenir. Böylece 90/90 tam yapılmadıkça 500 tam puan verilmez.
- * Taban (100 puan) ise tüm soruları yanlış (-soru*ceza) yapan en düşük kuramsal nete sabitlenir.
- */
-function finalizeCohortRealistic_(cfg, rows) {
-  var info = Scoring.finalizeCohort(cfg, rows);
-  if (cfg.method !== 'std500' || !rows.length) return info;
-  var ns = cfg.sections.length, penalty = Math.max(0, Number(cfg.penalty) || 0), j;
-  var stats = [];
-  for (j = 0; j < ns; j++) {
-    var st = (info && info.stats && info.stats[j]) ? info.stats[j] : Scoring.meanSd(rows.map(function (r) { return r.secNets[j]; }));
-    var minSd = Math.max(1, cfg.sections[j].count * 0.18);
-    var sd = (st && st.sd > minSd) ? st.sd : minSd;
-    var mean = (st && isFinite(st.mean)) ? st.mean : (cfg.sections[j].count * 0.45);
-    stats.push({ mean: mean, sd: sd });
-  }
-  var aFull = 0, aMinTheo = 0;
-  for (j = 0; j < ns; j++) {
-    var cnt = cfg.sections[j].count, coef = cfg.sections[j].coef;
-    var sFull = 50 + 10 * ((cnt - stats[j].mean) / stats[j].sd);
-    var minNet = penalty > 0 ? (-cnt * penalty) : 0;
-    var sLow = 50 + 10 * ((minNet - stats[j].mean) / stats[j].sd);
-    aFull += coef * sFull;
-    aMinTheo += coef * sLow;
-  }
-  if (cfg.stats && cfg.stats.aMin != null && cfg.stats.aMax != null) {
-    aMinTheo = Number(cfg.stats.aMin);
-    aFull = Number(cfg.stats.aMax);
-  }
-  rows.forEach(function (r) {
-    var A = 0, allFull = true;
-    r.secStd = [];
-    for (j = 0; j < ns; j++) {
-      var net = Number(r.secNets[j]) || 0;
-      if (net < cfg.sections[j].count - 0.0001) allFull = false;
-      var z = (net - stats[j].mean) / stats[j].sd, S = 50 + 10 * z;
-      r.secStd.push(Math.round(S * 100) / 100);
-      A += cfg.sections[j].coef * S;
-    }
-    r.A = A;
-    var p;
-    if (allFull) {
-      p = cfg.max;
-    } else if (aFull > aMinTheo) {
-      p = cfg.base + (cfg.max - cfg.base) * (A - aMinTheo) / (aFull - aMinTheo);
-      p = Math.max(cfg.base, Math.min(cfg.max - 0.001, p));
-    } else {
-      p = cfg.base;
-    }
-    r.puan = Math.round(p * 1000) / 1000;
-  });
-  return { stats: stats, aMin: aMinTheo, aMax: aFull };
-}
-
 function computeExam_(ex) {
   var cfg = Scoring.normalizeCfg(JSON.parse(ex.config || '{}'));
   var sh = resultsSheet_(ex.examId, false), res = sh ? objs_(sh, RESULT_HEADERS) : [];
@@ -874,7 +800,7 @@ function computeExam_(ex) {
       secNets: sc.sections.map(function (x) { return x.net; }), registered: !!s, scannedAt: r.scannedAt
     };
   });
-  var info = finalizeCohortRealistic_(cfg, rows);
+  var info = Scoring.finalizeCohort(cfg, rows);
   Scoring.rankRows(rows, 'rGenel');
   Scoring.rankRows(rows, 'rIl', function (r) { return r.il; });
   Scoring.rankRows(rows, 'rIlce', function (r) { return r.il + '|' + r.ilce; });
@@ -1747,72 +1673,6 @@ function aAiTest(u, p) {
   return { provider: c.id, providerName: c.name, model: res.cand.model, tier: res.cand.tier, source: res.cand.source, ms: res.tried[res.tried.length - 1].ms, tried: res.tried, reply: clean_(res.raw, 80) };
 }
 
-
-var AI_EXT_PDF_SYSTEM_ = 'You extract structured exam result tables from Turkish school exam PDF reports (e.g. LGS, TYT, Okul Net Listesi). ' +
-  'Read every student row carefully. Do NOT invent missing numbers; use null if unreadable. ' +
-  'Return ONLY one JSON object: {"examName":string,"kaynak":string,"date":string,"puanAdi":string,"lessons":[{"name":string,"short":string,"count":number}],' +
-  '"avg":{"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null},"avgOkul":{"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null},' +
-  '"rows":[{"ogrNo":string,"ad":string,"sinif":string,"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null,"rk":{"snf":number|null,"okul":number|null,"ilce":number|null,"il":number|null,"genel":number|null,"pct":number|null}}],' +
-  '"warnings":[string]}.';
-
-/**
- * Yayınevi / kurum PDF sonuç listesini (base64 PDF veya sayfa görseli) ücretsiz/tanımlı yapay zekâ API'si ile okur.
- * Eksik numara, tutarsız D/Y/N veya ders sayısı hatası varsa satır bazlı hata nedenini döndürür.
- * Ücretsiz API kaynakları: Google Gemini (aistudio.google.com/apikey — PDF doğrudan okur), OpenRouter (openrouter.ai), Groq (console.groq.com).
- */
-function aAiParseExternalPdf(u, p) {
-  var cfg = aiCfg_(), any = cfg.providers.some(function (c) { return c.ok; });
-  if (!any) throw fail_('Yapay zekâ anahtarı tanımlı değil. Ücretsiz Google Gemini (aistudio.google.com/apikey), OpenRouter (openrouter.ai) veya Groq (console.groq.com) anahtarını Yönetim → Yapay Zekâ ekranından ekleyin.', 'NOAI');
-  var rawData = String(p.file || p.image || '').replace(/^data:[^;]+;base64,/, '');
-  if (!/^[A-Za-z0-9+\/=]+$/.test(rawData) || rawData.length < 500) throw fail_('PDF veya görüntü verisi geçersiz.');
-  if (rawData.length > 10000000) throw fail_('Dosya çok büyük (en fazla ~7 MB).');
-  var isPdf = p.mediaType === 'application/pdf';
-  var mt = isPdf ? 'application/pdf' : (p.mediaType === 'image/png' ? 'image/png' : 'image/jpeg');
-  throttle_('ai_u_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), AI_USER_PER_HOUR, 3600, 'Saatlik yapay zekâ analiz sınırına ulaştınız.');
-  throttle_('ai_all_' + new Date().toISOString().slice(0, 10), AI_ALL_PER_DAY, 86400, 'Günlük yapay zekâ analiz sınırına ulaşıldı.');
-  var pr = aiReqPrefs_(cfg, p);
-  var chain = aiChain_(cfg, isPdf && !pr.provider ? 'gemini' : pr.provider, pr.tier, pr.model);
-  if (isPdf) {
-    var gemOnly = chain.filter(function (x) { return x.c.id === 'gemini'; });
-    if (gemOnly.length) chain = gemOnly;
-    else throw fail_('Doğrudan PDF okumak için ücretsiz Google Gemini API anahtarı gerekir (aistudio.google.com/apikey) veya tarayıcıdan sayfa görüntüsü olarak gönderin.', 'NOAI');
-  }
-  var prompt = 'Extract the complete exam result table from this Turkish exam report. Preserve Turkish characters, student numbers, class names, D/Y/N per lesson, total D/Y/N, exam score (e.g. LGS Puanı), and ranks (Snf, Okul, İlçe, İl, Genel, %). ' +
-    (p.hint ? 'Note: ' + clean_(p.hint, 200) + ' ' : '') + 'Return valid JSON only.';
-  var res = aiTry_(chain, AI_EXT_PDF_SYSTEM_, prompt, rawData, mt, function (out) {
-    var j = aiExtractJson_(out);
-    return j && Array.isArray(j.rows) ? j : null;
-  });
-  var j = res.value, warnings = Array.isArray(j.warnings) ? j.warnings.slice(0, 30).map(function (w) { return clean_(w, 200); }) : [];
-  var lessons = Array.isArray(j.lessons) && j.lessons.length ? j.lessons : [
-    { name: 'Türkçe', short: 'TÜR', count: 20 }, { name: 'T.C. İnkılap Tarihi', short: 'TAR', count: 10 },
-    { name: 'Din Kültürü', short: 'DİN', count: 10 }, { name: 'İngilizce', short: 'İNG', count: 10 },
-    { name: 'Matematik', short: 'MAT', count: 20 }, { name: 'Fen Bilimleri', short: 'FEN', count: 20 }
-  ];
-  var errors = [], cleanRows = [];
-  (j.rows || []).forEach(function (r, idx) {
-    var no = normNo_(clean_(r && r.ogrNo, 20)), ad = clean_(r && r.ad, 80);
-    if (!no && !ad) { errors.push('Satır ' + (idx + 1) + ': Öğrenci numarası ve ad okunamadı.'); return; }
-    if (!no || no === '0') warnings.push('Satır ' + (idx + 1) + ' (' + ad + '): Öğrenci numarası eksik veya 0 okundu.');
-    if (!r.sec || r.sec.length !== lessons.length) {
-      warnings.push('Satır ' + (idx + 1) + ' (' + (ad || no) + '): Ders sayısı (' + (r.sec ? r.sec.length : 0) + ') başlıkla (' + lessons.length + ') uyuşmuyor.');
-    } else {
-      for (var li = 0; li < lessons.length; li++) {
-        var tri = r.sec[li] || [], d = Number(tri[0]), y = Number(tri[1]), cnt = Number(lessons[li].count) || 0;
-        if (cnt > 0 && isFinite(d) && isFinite(y) && (d + y) > cnt) {
-          warnings.push('Satır ' + (idx + 1) + ' (' + (ad || no) + '): ' + lessons[li].name + ' dersinde D+Y (' + (d + y) + ') soru sayısından (' + cnt + ') büyük.');
-        }
-      }
-    }
-    cleanRows.push(r);
-  });
-  return {
-    examName: clean_(j.examName, 80), kaynak: clean_(j.kaynak, 60), date: clean_(j.date, 10), puanAdi: clean_(j.puanAdi, 30) || 'LGS Puanı',
-    lessons: lessons, avg: j.avg || null, avgOkul: j.avgOkul || null, rows: cleanRows,
-    warnings: warnings, errors: errors, provider: res.cand.c.id, providerName: res.cand.c.name, model: res.cand.model
-  };
-}
-
 /* ============================ ROUTER ============================ */
 
 var ACTIONS = {
@@ -1853,7 +1713,6 @@ var ACTIONS = {
   aiSaveConfig: { fn: aAiSaveConfig, write: true },
   aiTest: { fn: aAiTest },
   aiAnalyzeForm: { fn: aAiAnalyzeForm },
-  aiParseExternalPdf: { fn: aAiParseExternalPdf },
   listUsers: { fn: aListUsers },
   saveUser: { fn: aSaveUser, write: true },
   submitResults: { fn: aSubmit, write: true },
