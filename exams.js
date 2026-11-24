@@ -117,8 +117,23 @@ App.views.exams = function (root) {
       drawMultiSchools();
       scopeBox = h('div', { class: 'sp' }, bar.any ? bar.el : null, scopeSel, hint);
     }
-    const preset = h('select', { onchange: () => { const e = Katalog.byId(preset.value); if (e) applyEntry(e, true); } },
-      h('option', { value: '' }, 'Hazır sınav programı seç…'), Katalog.GROUPS.filter(g => g.id !== 'tek').map(g => h('optgroup', { label: g.label }, Katalog.ENTRIES.filter(e => e.group === g.id).map(e => h('option', { value: e.id }, e.name)))));
+    const SC_PRESETS = ['lgs_dershane', 'iokbs'].filter(k => Scoring.PRESETS && Scoring.PRESETS[k]);
+    function applyScoringPreset(key) {
+      const p = Scoring.PRESETS && Scoring.PRESETS[key]; if (!p) return;
+      setSections(p.sections.map(x => Object.assign({}, x)));
+      choices.value = p.choices;
+      { const m = PENALTIES.find(x => Math.abs(parseFloat(x[0]) - p.penalty) < 1e-6); if (m) pen.value = m[0]; }
+      methodSel.value = p.method; base.value = p.base != null ? p.base : 100; max.value = p.max != null ? p.max : 500;
+      booklets = ['A', 'B']; bkIn.value = booklets.join(',');
+      drawSections(); drawKeys(); drawMethod();
+    }
+    const preset = h('select', { onchange: () => {
+      if (preset.value.startsWith('sc:')) { applyScoringPreset(preset.value.slice(3)); return; }
+      const e = Katalog.byId(preset.value); if (e) applyEntry(e, true);
+    } },
+      h('option', { value: '' }, 'Hazır sınav programı seç…'),
+      SC_PRESETS.length ? h('optgroup', { label: 'Dershane / Sabit Katsayılı (LGS · Bursluluk)' }, SC_PRESETS.map(k => h('option', { value: 'sc:' + k }, Scoring.PRESETS[k].label))) : null,
+      Katalog.GROUPS.filter(g => g.id !== 'tek').map(g => h('optgroup', { label: g.label }, Katalog.ENTRIES.filter(e => e.group === g.id).map(e => h('option', { value: e.id }, e.name)))));
     function applyEntry(e, setForm) {
       const c = Katalog.examConfig(e); setSections(c.sections.map(x => Object.assign({}, x))); choices.value = c.choices;
       { const m = PENALTIES.find(p => Math.abs(parseFloat(p[0]) - c.penalty) < 1e-6); if (m) pen.value = m[0]; }
@@ -129,9 +144,25 @@ App.views.exams = function (root) {
     const choices = h('select', null, [2, 3, 4, 5, 6].map(n => h('option', { value: n }, n + ' şık'))); choices.value = cfg0.choices;
     const pen = h('select', null, PENALTIES.map(([v, l]) => h('option', { value: v }, l)));
     { const cur = cfg0.penalty, m = PENALTIES.find(p => Math.abs(parseFloat(p[0]) - cur) < 1e-6); if (m) pen.value = m[0]; else { pen.append(h('option', { value: String(cur) }, `Özel (${cur})`)); pen.value = String(cur); } }
-    const methodSel = h('select', { onchange: drawMethod }, h('option', { value: 'net' }, 'Ağırlıklı net → 100 üzerinden puan'), h('option', { value: 'std500' }, 'Standart puan → 100–500 (LGS/YKS tarzı)'), h('option', { value: 'stdw' }, 'Ortalama standart puan (a + b·ort.)')); methodSel.value = cfg0.method;
+    const methodSel = h('select', { onchange: drawMethod },
+      h('option', { value: 'coef500' }, 'Sabit taban + ders katsayısı (Dershane LGS / Bursluluk)'),
+      h('option', { value: 'std500' }, 'Standart puan → 100–500 (LGS/YKS tarzı)'),
+      h('option', { value: 'net' }, 'Ağırlıklı net → 100 üzerinden puan'),
+      h('option', { value: 'stdw' }, 'Ortalama standart puan (a + b·ort.)')); methodSel.value = cfg0.method;
     const base = h('input', { type: 'number', value: cfg0.base, step: 'any' }), max = h('input', { type: 'number', value: cfg0.max, step: 'any' }), ca = h('input', { type: 'number', value: cfg0.a, step: 'any' }), cb = h('input', { type: 'number', value: cfg0.b, step: 'any' });
-    const methodBox = h('div'); function drawMethod() { clear(methodBox); if (methodSel.value === 'std500') methodBox.append(h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'En düşük puan'), base), h('div', { class: 'field' }, h('label', null, 'En yüksek puan'), max))); else if (methodSel.value === 'stdw') methodBox.append(h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'a (sabit)'), ca), h('div', { class: 'field' }, h('label', null, 'b (çarpan)'), cb))); }
+    const methodBox = h('div');
+    function drawMethod() {
+      clear(methodBox);
+      if (methodSel.value === 'coef500') {
+        methodBox.append(
+          h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Taban puan (0 net puanı)'), base), h('div', { class: 'field' }, h('label', null, 'Tavan puan (tam net)'), max)),
+          h('p', { class: 'small muted', style: { margin: '.3rem 0 0' } }, 'Formül: Puan = Taban + Σ(Ders Neti × Katsayı). Aşağıdaki tablodan her dersin katsayısını ve taban puanı dilediğiniz gibi değiştirebilirsiniz; tüm sorular tam yapılmadıkça tavan (500) puan verilmez.'));
+      } else if (methodSel.value === 'std500') {
+        methodBox.append(h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'En düşük puan'), base), h('div', { class: 'field' }, h('label', null, 'En yüksek puan'), max)));
+      } else if (methodSel.value === 'stdw') {
+        methodBox.append(h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'a (sabit)'), ca), h('div', { class: 'field' }, h('label', null, 'b (çarpan)'), cb)));
+      }
+    }
     const secBox = h('div'), total = h('span', { class: 'chip' });
     function drawSections() {
       clear(secBox); const tbl = h('table', null, h('thead', null, h('tr', null, ['Bölüm / ders', 'Soru sayısı', 'Katsayı', ''].map(t => h('th', null, t)))), h('tbody', null, sections.map((s, i) => h('tr', null,
