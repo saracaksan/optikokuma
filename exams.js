@@ -255,6 +255,86 @@ App.views.exams = function (root) {
     const status = h('select', { id: 'ex-status' }, h('option', { value: 'open' }, 'Okutmaya açık'), h('option', { value: 'draft' }, 'Taslak (okutulamaz)'), h('option', { value: 'closed' }, 'Kapalı')); status.value = ex ? ex.status : 'open';
     const showKeys = h('input', { type: 'checkbox', checked: c0.showKeys !== false }), veli = h('input', { type: 'checkbox', checked: c0.veli === true, id: 'ex-veli' });
     const err = h('div');
+    // --- Kazanım / Konu Haritası (soru bazlı kazanım yükleme ve otomatik eylem planı kaynağı)
+    let kazList = Array.isArray(c0.kazanimlar) ? c0.kazanimlar.map(k => Object.assign({}, k)) : [];
+    const kazBox = h('div', { class: 'card', style: { background: 'var(--bg-soft, #f8fafc)', padding: '.8rem', marginBottom: '.6rem' } });
+    function parseKazText(txt) {
+      const lines = String(txt || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const out = [];
+      let autoQ = 1;
+      lines.forEach(line => {
+        const parts = line.split(/\t|;|\|/).map(x => x.trim());
+        if (parts.length === 1 && !/^\d+$/.test(parts[0])) {
+          out.push({ soru: autoQ++, ders: '', kod: '', konu: parts[0] });
+          return;
+        }
+        const qNum = parseInt(parts[0], 10);
+        if (isFinite(qNum) && qNum >= 1 && qNum <= 300) {
+          if (parts.length >= 4) out.push({ soru: qNum, ders: parts[1], kod: parts[2], konu: parts.slice(3).join(' ') });
+          else if (parts.length === 3) out.push({ soru: qNum, ders: parts[1], kod: '', konu: parts[2] });
+          else out.push({ soru: qNum, ders: '', kod: '', konu: parts[1] || '' });
+          autoQ = qNum + 1;
+        } else if (parts.length >= 2) {
+          out.push({ soru: autoQ++, ders: parts[0], kod: parts.length >= 3 ? parts[1] : '', konu: parts.slice(parts.length >= 3 ? 2 : 1).join(' ') });
+        }
+      });
+      return out.filter(x => x.konu || x.kod);
+    }
+    function drawKaz() {
+      clear(kazBox);
+      const ta = h('textarea', {
+        rows: 4,
+        placeholder: 'Excel\'den yapıştırın veya satır satır yazın:\nÖrnek 1 (Soru \t Ders \t Kazanım Kodu \t Konu/Kazanım):\n1\tTürkçe\tT.8.3.5\tSözcükte Anlam ve Bağlam\n2\tTürkçe\tT.8.3.14\tParagrafta Ana Düşünce\nÖrnek 2 (Sadece soru sırasıyla konu adı):\nÜslü İfadeler\nKareköklü İfadeler',
+        style: { width: '100%', fontSize: '.85rem' }
+      });
+      const fi = h('input', {
+        type: 'file',
+        accept: '.csv,.txt,.tsv',
+        class: 'hidden',
+        onchange: async e => {
+          const f = e.target.files[0];
+          if (f) { ta.value = await readFileText(f); }
+          e.target.value = '';
+        }
+      });
+      kazBox.append(
+        h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Denemenin soru bazlı kazanımlarını yüklerseniz, Öğrenci Analizi ekranında her öğrencinin yanlış/boş bıraktığı sorulara göre otomatik Konu/Kazanım Eylem Planı oluşturulur.'),
+        ta,
+        h('div', { class: 'row', style: { marginTop: '.45rem' } },
+          h('button', { type: 'button', class: 'btn sm primary', onclick: () => {
+            const parsed = parseKazText(ta.value);
+            if (!parsed.length) return toast('Geçerli kazanım satırı bulunamadı.', 'warn');
+            const byQ = new Map(kazList.map(x => [x.soru, x]));
+            parsed.forEach(x => byQ.set(x.soru, x));
+            kazList = Array.from(byQ.values()).sort((a, b) => a.soru - b.soru);
+            ta.value = '';
+            drawKaz();
+            toast(`${parsed.length} kazanım eklendi/güncellendi.`, 'ok');
+          } }, 'Kazanımları Listeye Ekle'),
+          h('button', { type: 'button', class: 'btn sm', onclick: () => fi.click() }, 'CSV / TXT Seç'),
+          fi,
+          kazList.length ? h('button', { type: 'button', class: 'btn sm ghost', onclick: () => { kazList = []; drawKaz(); } }, 'Tümünü Temizle') : null,
+          h('span', { class: 'grow' }),
+          h('span', { class: 'pill ' + (kazList.length ? 'ok' : '') }, `${kazList.length} kazanım tanımlı`)
+        ),
+        kazList.length
+          ? h('div', { class: 'tablewrap', style: { maxHeight: '180px', marginTop: '.5rem' } },
+              h('table', { class: 'zebra-tbl' },
+                h('thead', null, h('tr', null, ['Soru', 'Ders', 'Kazanım Kodu', 'Konu / Kazanım', ''].map(t => h('th', null, t)))),
+                h('tbody', null, kazList.map((k, idx) => h('tr', null,
+                  h('td', { class: 'num' }, k.soru),
+                  h('td', null, k.ders || '–'),
+                  h('td', { class: 'mono small' }, k.kod || '–'),
+                  h('td', null, k.konu),
+                  h('td', null, h('button', { type: 'button', class: 'btn sm ghost', onclick: () => { kazList.splice(idx, 1); drawKaz(); } }, '✕'))
+                )))
+              )
+            )
+          : null
+      );
+    }
+    drawKaz();
+
     drawSections(); drawMethod(); drawKeys(); drawStd();
     if (init && init.templateId && S.templates.some(t => t.templateId === init.templateId)) { tplSel.value = init.templateId; applyTplLessons(); name.value = name.value || (S.templates.find(t => t.templateId === init.templateId) || {}).name || ''; }
     if (init && init.entryId) { const e = Katalog.byId(init.entryId); if (e) { preset.value = e.group !== 'tek' ? e.id : ''; applyEntry(e, true); if (init.nup) stdNup.value = init.nup; if (init.d != null) stdD.value = init.d; stdSd.value = init.sd || 0; drawStd(); } }
@@ -265,6 +345,7 @@ App.views.exams = function (root) {
       h('h3', { style: { marginTop: '1rem' } }, 'Puanlama'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Hazır ayar'), preset), h('div', { class: 'field' }, h('label', null, 'Şık sayısı'), choices), h('div', { class: 'field' }, h('label', null, 'Net kuralı'), pen), h('div', { class: 'field' }, h('label', null, 'Puan yöntemi'), methodSel)), methodBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Ders / bölümler ve katsayılar'), secBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Kitapçıklar ve cevap anahtarı'), h('div', { class: 'field', style: { maxWidth: '260px' } }, h('label', null, 'Kitapçık türleri (virgülle)'), bkIn), keyBox,
+      h('h3', { style: { marginTop: '1rem' } }, 'Kazanımlar ve Konu Haritası (Otomatik Eylem Planı için)'), kazBox,
       h('h3', { style: { marginTop: '1rem' } }, 'Optik form'), h('div', { class: 'grid' }, h('div', { class: 'field' }, h('label', null, 'Optik form (okuma şablonu)'), tplSel), h('div', { class: 'field' }, h('label', null, 'Durum'), status)), stdBox, stdInfo,
       h('p', { class: 'small muted' }, 'Hazır formu Formlar → Hazır şablonlar sayfasından yazdırın; okutma aynı formu otomatik tanır. Kendi formunuzu Formlar → Tasarla bölümünde oluşturup kaydederseniz burada "Kayıtlı şablonlarım" altında seçersiniz.'),
       h('label', { class: 'row', style: { marginTop: '.4rem' } }, showKeys, 'Okul kullanıcıları cevap anahtarını görebilsin (okutma sırasında D/Y/B gösterilir)'),
@@ -299,7 +380,7 @@ App.views.exams = function (root) {
       const flat = Object.fromEntries(booklets.map(b => [b, sections.map(s => fixKey(s, b)).join('')]));
       const useMap = !!tplOf() && hasManualMap();
       const config = { sections: sections.map(s => ({ name: s.name.trim(), count: s.count, coef: s.coef })), choices: +choices.value, penalty: parseFloat(pen.value), method: methodSel.value, base: parseFloat(base.value), max: parseFloat(max.value), a: parseFloat(ca.value) || 0, b: parseFloat(cb.value) || 1,
-        keys: flat, booklets, templateId, formMap: useMap ? mapSpec() : undefined, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
+        keys: flat, booklets, templateId, formMap: useMap ? mapSpec() : undefined, kazanimlar: kazList.length ? kazList : undefined, showKeys: showKeys.checked, veli: veli.checked, stats: cfg0.stats };
       try {
         const r = await api('saveExam', { exam: { examId: ex && ex.examId, name: name.value.trim(), date: date.value, scopeType: sc[0], scopeValue: scopeVal, status: status.value, config }, allowIssues: status.value !== 'open' });
         await refreshBase(); draw(); toast('Sınav kaydedildi', 'ok');

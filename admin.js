@@ -15,11 +15,16 @@ function mapTable(table, fields) {
 
 App.views.admin = function (root) {
   const u = App.state.user;
-  const tabs = u.role === 'okul' ? [['students', 'Öğrenciler'], ['users', 'Öğretmenler'], ['wa', 'Veli WhatsApp'], ['apps', 'Başvurular']] : [['schools', 'Okullar'], ['students', 'Öğrenciler'], ['users', 'Kullanıcılar'], ['wa', 'Veli WhatsApp'], ['apps', 'Başvurular']].concat(u.role === 'admin' ? [['ai', 'Yapay zekâ']] : []);
+  const isRegional = u.role === 'admin' || u.role === 'il' || u.role === 'ilce';
+  const tabs = u.role === 'okul'
+    ? [['students', 'Öğrenciler'], ['users', 'Öğretmenler'], ['wa', 'Veli WhatsApp'], ['apps', 'Başvurular']]
+    : (isRegional ? [['region', (u.role === 'il' ? 'İl Yönetimi' : u.role === 'ilce' ? 'İlçe Yönetimi' : 'Bölge Yönetimi')]] : [])
+        .concat([['schools', 'Okullar'], ['students', 'Öğrenciler'], ['users', 'Kullanıcılar'], ['wa', 'Veli WhatsApp'], ['apps', 'Başvurular']])
+        .concat(u.role === 'admin' ? [['ai', 'Yapay zekâ']] : []);
   if (!tabs.some(t => t[0] === AD.tab)) AD.tab = tabs[0][0];
   const tb = h('div', { class: 'tabs' }), pane = h('div');
   const lab = (id, l) => id === 'apps' && App.state.pending ? [l, h('span', { class: 'badge', style: { position: 'static', marginLeft: '.4rem', display: 'inline-block' } }, App.state.pending)] : l;
-  const draw = () => { clear(tb).append(...tabs.map(([id, l]) => h('button', { id: 'ad-tab-' + id, class: AD.tab === id ? 'active' : '', onclick: () => { AD.tab = id; draw(); } }, lab(id, l)))); clear(pane); ({ schools: schoolsTab, students: studentsTab, users: usersTab, wa: waTab, apps: appsTab, ai: aiTab })[AD.tab](pane); };
+  const draw = () => { clear(tb).append(...tabs.map(([id, l]) => h('button', { id: 'ad-tab-' + id, class: AD.tab === id ? 'active' : '', onclick: () => { AD.tab = id; draw(); } }, lab(id, l)))); clear(pane); ({ region: regionTab, schools: schoolsTab, students: studentsTab, users: usersTab, wa: waTab, apps: appsTab, ai: aiTab })[AD.tab](pane); };
   root.append(h('h1', null, 'Yönetim'), tb, pane); draw(); App.refreshPending && App.refreshPending();
 };
 
@@ -31,11 +36,151 @@ function importBox(hint, onImport) {
   } }, 'Yükle'), h('button', { class: 'btn', onclick: () => fi.click() }, 'CSV dosyası seç'), fi), out);
 }
 
+
+/** İlçe / İl Yönetim Paneli: tüm okulları tek panelden inceleme, ortak sınav ve ders ortalamaları, okula geçip müdür yetkisiyle inceleme. */
+function regionTab(pane) {
+  const S = App.state, u = S.user, box = h('div');
+  const allSc = S.schools.slice().sort((a, b) => String(a.okulAdi).localeCompare(String(b.okulAdi), 'tr'));
+  const ilOpts = Array.from(new Set(allSc.map(s => s.il).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'));
+  let selIl = u.role === 'il' || u.role === 'ilce' ? u.il : (Sel.v.il || '');
+  let selIlce = u.role === 'ilce' ? u.ilce : (Sel.v.ilce || '');
+  let selExam = '';
+  let cachedData = null;
+
+  const ilSel = h('select', { disabled: u.role === 'il' || u.role === 'ilce', onchange: e => { selIl = e.target.value; selIlce = ''; fillIlce(); loadReg(); } },
+    h('option', { value: '' }, 'Tüm iller'),
+    ilOpts.map(x => h('option', { value: x }, x)));
+  ilSel.value = selIl;
+
+  const ilceSel = h('select', { disabled: u.role === 'ilce', onchange: e => { selIlce = e.target.value; loadReg(); } });
+  function fillIlce() {
+    const list = Array.from(new Set(allSc.filter(s => !selIl || s.il === selIl).map(s => s.ilce).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'));
+    clear(ilceSel).append(h('option', { value: '' }, 'Tüm ilçeler'), list.map(x => h('option', { value: x }, x)));
+    ilceSel.value = list.includes(selIlce) ? selIlce : '';
+    selIlce = ilceSel.value;
+  }
+  fillIlce();
+
+  const examSel = h('select', { onchange: e => { selExam = e.target.value; renderReg(); } });
+  const refreshBtn = h('button', { class: 'btn', onclick: () => loadReg(true) }, '↻ Güncelle');
+
+  pane.append(
+    h('div', { class: 'card' },
+      h('h2', null, u.role === 'il' ? 'İl Yönetim Paneli' : u.role === 'ilce' ? 'İlçe Yönetim Paneli' : 'İlçe & İl Yönetim Paneli'),
+      h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Yetki alanınızdaki tüm okulları tek panelden inceleyin; ortak sınavlardaki net, başarı ve ders ortalamalarını karşılaştırın ve istediğiniz okulun detayına/ekranlarına geçin.'),
+      h('div', { class: 'row an-f' },
+        h('div', { class: 'field' }, h('label', null, 'İl'), ilSel),
+        h('div', { class: 'field' }, h('label', null, 'İlçe'), ilceSel),
+        h('div', { class: 'field' }, h('label', null, 'Ortak Sınav Filtresi'), examSel),
+        h('div', { class: 'field' }, h('label', null, ' '), refreshBtn)
+      )
+    ),
+    box
+  );
+
+  function goSchool(code, viewName) {
+    const sch = schoolByCode(code);
+    if (sch) Sel.set({ il: sch.il, ilce: sch.ilce, okul: String(code) });
+    else Sel.set({ okul: String(code) });
+    Settings.set('admSchool', String(code));
+    if (viewName === 'students') { AD.tab = 'students'; App.go('admin'); }
+    else if (viewName === 'analiz') { if (typeof AN !== 'undefined') AN.okul = String(code); App.go('analiz'); }
+    else if (viewName === 'results') { if (typeof RS !== 'undefined') RS.okul = String(code); App.go('results'); }
+    else { AD.tab = 'students'; App.go('admin'); }
+  }
+
+  function renderReg() {
+    clear(box);
+    if (!cachedData) { box.append(h('div', { class: 'card empty' }, 'Veri yükleniyor…')); return; }
+    const d = cachedData;
+    const exams = d.exams || [];
+    const curExamId = examSel.value;
+    clear(examSel).append(h('option', { value: '' }, 'Tüm ortak sınavlar (genel ortalama)'), exams.map(ex => h('option', { value: ex.examId }, `${ex.name}${ex.date ? ' · ' + ex.date : ''} (${ex.schoolCount} okul)`)));
+    if (exams.some(ex => ex.examId === curExamId)) examSel.value = curExamId;
+    else examSel.value = '';
+
+    const activeExam = examSel.value ? exams.find(ex => ex.examId === examSel.value) : null;
+    const rows = activeExam ? activeExam.schools : (d.schools || []);
+    const allDersler = Array.from(new Set(rows.flatMap(r => activeExam ? (r.sections || []).map(s => s.name) : Object.keys(r.dersOrt || {}))));
+
+    const kpiRow = h('div', { class: 'card' },
+      h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', null, d.schoolCount || 0), h('span', null, 'kapsamdaki okul')),
+        h('div', { class: 'stat' }, h('b', null, d.totalStudents || 0), h('span', null, 'kayıtlı öğrenci')),
+        h('div', { class: 'stat' }, h('b', null, exams.length), h('span', null, 'sonuçlanan sınav')),
+        h('div', { class: 'stat' }, h('b', null, activeExam ? nf(activeExam.avgNet, 2) : (rows.length ? nf(rows.reduce((a, x) => a + (x.avgNet || 0), 0) / rows.length, 2) : '–')), h('span', null, activeExam ? `${activeExam.name} ort. net` : 'okullar ort. net'))
+      )
+    );
+
+    const headCols = ['Sıra', 'Okul', 'İlçe', activeExam ? 'Katılım' : 'Öğrenci', 'Ort. Net', 'Ort. Puan', 'Başarı %', ...allDersler.map(dn => dn + ' Net'), 'Okul Yetkisi / İncele'];
+    const bodyRows = rows.map((r, idx) => {
+      const rankVal = r.rank || (idx + 1);
+      const countVal = activeExam ? (r.n ?? '') : (r.ogrenciSayisi ?? '');
+      const dersCells = allDersler.map(dn => {
+        if (activeExam) {
+          const hit = (r.sections || []).find(s => s.name === dn);
+          return h('td', { class: 'num' }, hit ? nf(hit.avgNet, 2) : '–');
+        }
+        const v = (r.dersOrt || {})[dn];
+        return h('td', { class: 'num' }, v != null ? nf(v, 2) : '–');
+      });
+      return h('tr', null,
+        h('td', { class: 'num' }, h('b', null, rankVal)),
+        h('td', null, h('b', null, r.okulAdi), h('div', { class: 'small muted' }, `Kod: ${r.okulKodu}`)),
+        h('td', null, r.ilce || ''),
+        h('td', { class: 'num' }, countVal),
+        h('td', { class: 'num' }, r.avgNet != null ? h('b', null, nf(r.avgNet, 2)) : '–'),
+        h('td', { class: 'num' }, r.avgPuan != null ? nf(r.avgPuan, 2) : '–'),
+        h('td', { class: 'num' }, r.avgPct != null ? '%' + nf(r.avgPct, 1) : '–'),
+        ...dersCells,
+        h('td', { class: 'nowrap' },
+          h('div', { class: 'row' },
+            h('button', { class: 'btn sm primary', onclick: () => goSchool(r.okulKodu, 'students') }, 'Öğrenci/Müdür'),
+            h('button', { class: 'btn sm', onclick: () => goSchool(r.okulKodu, 'analiz') }, 'Analiz'),
+            h('button', { class: 'btn sm', onclick: () => goSchool(r.okulKodu, 'results') }, 'Sonuçlar')
+          )
+        )
+      );
+    });
+
+    const tblCard = h('div', { class: 'card' },
+      h('h2', null, activeExam ? `${activeExam.name} — Okullar Karşılaştırması` : 'Okullar Geneli — Net, Puan ve Ders Ortalamaları'),
+      rows.length
+        ? h('div', { class: 'tablewrap' }, h('table', { class: 'zebra-tbl' },
+            h('thead', null, h('tr', null, headCols.map((c, i) => h('th', { class: i >= 3 && i < 7 + allDersler.length ? 'num' : '' }, c)))),
+            h('tbody', null, bodyRows)))
+        : h('div', { class: 'empty' }, 'Seçilen filtrede okul veya sınav sonucu bulunamadı.')
+    );
+
+    box.append(kpiRow, tblCard);
+  }
+
+  async function loadReg(force) {
+    clear(box); box.append(h('div', { class: 'card empty' }, 'Bölge verileri yükleniyor…'));
+    try {
+      const key = `reg:${selIl}:${selIlce}`;
+      if (!force) {
+        const hit = await DB.get('kv', key);
+        if (hit) { cachedData = hit; renderReg(); }
+      }
+      const d = await api('regionalOverview', { il: selIl, ilce: selIlce });
+      await DB.put('kv', d, key);
+      cachedData = d;
+      renderReg();
+    } catch (e) {
+      clear(box);
+      box.append(h('div', { class: 'alert bad' }, 'Bölge verileri alınamadı: ' + (e.message || e)));
+    }
+  }
+
+  loadReg(false);
+}
+
 function schoolsTab(pane) {
   const S = App.state, list = h('div');
   const drawList = () => {
     clear(list); const holder = h('div');
-    const paint = rows => { clear(holder).append(dataTable([{ k: 'okulKodu', label: 'Kod' }, { k: 'okulAdi', label: 'Okul' }, { k: 'tur', label: 'Düzey' }, { k: 'ilce', label: 'İlçe' }, { k: 'il', label: 'İl' }, S.schools.some(x => x.mudur) ? { k: 'mudur', label: 'Müdür' } : null, S.schools.some(x => x.telefon) ? { k: 'telefon', label: 'Telefon' } : null, { k: '_act', label: '', render: r => h('span', { class: 'row nowrap' }, h('button', { class: 'btn sm', 'data-act': 'edit', onclick: ev => { ev.stopPropagation(); schoolForm(r, afterChange); } }, 'Düzenle'), h('button', { class: 'btn sm danger', 'data-act': 'del', onclick: ev => { ev.stopPropagation(); deleteSchool(r, afterChange); } }, 'Sil')) }].filter(Boolean), rows, { sort: { key: 'il', dir: 1 }, limit: 300 })); };
+    const paint = rows => { clear(holder).append(dataTable([{ k: 'okulKodu', label: 'Kod' }, { k: 'okulAdi', label: 'Okul' }, { k: 'tur', label: 'Düzey' }, { k: 'ilce', label: 'İlçe' }, { k: 'il', label: 'İl' }, S.schools.some(x => x.mudur) ? { k: 'mudur', label: 'Müdür' } : null, S.schools.some(x => x.telefon) ? { k: 'telefon', label: 'Telefon' } : null, { k: '_act', label: '', render: r => h('span', { class: 'row nowrap' }, h('button', { class: 'btn sm', title: 'Bu okulu seçip öğrenci/sınav/analiz ekranlarına in', onclick: ev => { ev.stopPropagation(); Sel.set({ il: r.il, ilce: r.ilce, okul: String(r.okulKodu) }); Settings.set('admSchool', String(r.okulKodu)); toast(`${r.okulAdi} seçildi`, 'ok'); } }, 'Okula Geç'), h('button', { class: 'btn sm', 'data-act': 'edit', onclick: ev => { ev.stopPropagation(); schoolForm(r, afterChange); } }, 'Düzenle'), h('button', { class: 'btn sm danger', 'data-act': 'del', onclick: ev => { ev.stopPropagation(); deleteSchool(r, afterChange); } }, 'Sil')) }].filter(Boolean), rows, { sort: { key: 'il', dir: 1 }, limit: 300 })); };
     const bar = schoolFilterBar(S.schools, rows => paint(rows)); list.append(h('div', { class: 'row', style: { marginBottom: '.5rem' } }, bar.el, h('button', { class: 'btn primary', id: 'sc-new', onclick: () => schoolForm(null, afterChange) }, '+ Okul ekle')), holder);
   };
   const afterChange = () => drawList();
@@ -275,7 +420,7 @@ function aiTab(pane) {
   function draw() {
     clear(box); const ready = st.providers.filter(o => o.ok).length;
     box.append(h('div', { class: 'card' }, h('h2', null, 'Yapay zekâ ayarları'),
-      h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Harici form tanıtılırken yapay zekâ yalnızca ders adı, şık harfleri ve blok türü önerir; baloncukların konumunu hesaplamaz (konum, görüntü işlemeyle milimetrik bulunur). Anahtar eklemek zorunlu değildir. Birden fazla sağlayıcı ekleyebilirsiniz: biri yanıt vermezse sıradakine geçilir. Model alanı boş bırakılırsa sunucu her seferinde (6 saatlik önbellekle) sağlayıcının güncel model listesini okur ve en yeni sürümü seçer; yeni model çıkınca ayar değiştirmeniz gerekmez.'),
+      h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Harici form tanıtılırken yapay zekâ bölümlerin yerini ve sayılarını (satır/sütun), ders adlarını, şık harflerini ve blok türünü önerir; baloncukların kesin konumunu yine görüntü işleme milimetrik bulur ve elle yaptığınız ayarlar korunur. Anahtar eklemek zorunlu değildir. Birden fazla sağlayıcı ekleyebilirsiniz: biri yanıt vermezse sıradakine geçilir. Model alanı boş bırakılırsa sunucu her seferinde (6 saatlik önbellekle) sağlayıcının güncel model listesini okur ve en yeni sürümü seçer; yeni model çıkınca ayar değiştirmeniz gerekmez.'),
       h('div', { class: 'grid' },
         field('Öncelikli sağlayıcı', select('ai-provider', [['auto', 'Otomatik (hazır olan ilk)']].concat(st.providers.map(o => [o.id, o.name])), d.provider, v => { d.provider = v; })),
         field('Hız ↔ yetenek', select('ai-tier', [['auto', TIER_L.auto], ['fast', 'Hızlı (en ucuz, en az bekleme)'], ['balanced', 'Dengeli'], ['best', 'En yetenekli (en yavaş)']], d.tier, v => { d.tier = v; }), 'Kullanıcılar ekranda kendi seçimlerini de yapabilir; seçmezlerse bu ayar kullanılır.')),

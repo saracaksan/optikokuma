@@ -51,7 +51,7 @@ function okulRender(pane, sel, ctx) {
     AnViz.line({ labels: L, sub: S, full: F, label: 'Okul gelişimi', fmt: v => nf(v, 1) + '%', yFmt: v => nf(v, 0) + '%', floor: 0, ceil: 100, series: [{ name: 'Ortalama', c: 1, pts: av }, { name: 'Medyan', c: 2, dash: true, pts: st.map(x => x.med) }, { name: 'Üst çeyrek (%75)', c: 3, dash: true, pts: st.map(x => x.q3) }, { name: 'Alt çeyrek (%25)', c: 4, dash: true, pts: st.map(x => x.q1) }] }),
     h('p', { class: 'small muted' }, 'Üst / alt çeyrek: öğrencilerin dörtte biri bu değerin üstünde / altındadır; ortalamayla medyan arasındaki fark dağılımın çarpıklığını gösterir.')));
   const rowsEx = st.map((x, i) => { const p = i ? snPrevIdx(av, i) : -1, d = p >= 0 && av[i] != null ? av[i] - av[p] : null, n = x.n; return h('tr', null, h('td', { class: 'nowrap' }, anFmtDate(n.date)), h('td', null, n.name), h('td', null, badge({ ext: n.ext, kaynak: n.kaynak })), h('td', { class: 'num' }, n.totalQ), h('td', { class: 'num' }, `${x.k} / ${Math.max(rosterN, x.k)}`), h('td', { class: 'num' }, x.part == null ? '' : '%' + nf(x.part, 0)), h('td', { class: 'num' }, nf(x.net)), h('td', { class: 'num' }, x.puan == null ? '' : nf(x.puan, 1)), h('td', { class: 'num', style: snHeat(x.avg, ogMean(av)) }, h('b', null, ogP(x.avg))), h('td', { class: 'num' }, d == null ? '' : anDelta(d, 'pct')), h('td', { class: 'num' }, ogP(x.med)), h('td', { class: 'num' }, ogP(x.q3)), h('td', { class: 'num' }, ogP(x.q1)), h('td', { class: 'num' }, ogP(x.max)), h('td', { class: 'num' }, ogP(x.min)), h('td', { class: 'num' }, x.std == null ? '' : nf(x.std, 1))); });
-  pane.append(h('div', { class: 'card' }, h('h2', null, 'Sınav sınav özet'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table', id: 'ok-exams' }, h('thead', null, h('tr', null, ['Tarih', 'Sınav', 'Kaynak'].map(x => h('th', null, x)), ['Soru', 'Katılan', 'Katılım', 'Ort. net', 'Ort. ' + sc.name.toLocaleLowerCase('tr'), 'Ort. başarı', 'Değişim', 'Medyan', 'Üst çeyrek', 'Alt çeyrek', 'En yüksek', 'En düşük', 'Std. sapma'].map(x => h('th', { class: 'num' }, x)))), h('tbody', null, rowsEx))),
+  pane.append(h('div', { class: 'card' }, h('h2', null, 'Sınav sınav özet'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table zebra-tbl', id: 'ok-exams' }, h('thead', null, h('tr', null, ['Tarih', 'Sınav', 'Kaynak'].map(x => h('th', null, x)), ['Soru', 'Katılan', 'Katılım', 'Ort. net', 'Ort. ' + sc.name.toLocaleLowerCase('tr'), 'Ort. başarı', 'Değişim', 'Medyan', 'Üst çeyrek', 'Alt çeyrek', 'En yüksek', 'En düşük', 'Std. sapma'].map(x => h('th', { class: 'num' }, x)))), h('tbody', null, rowsEx))),
     sc.mixed ? h('p', { class: 'small muted' }, `Puan türleri farklı (${sc.names.join(', ')}); puan sütununda yalnızca ${sc.name} sınavları gösterilir.`) : null));
   // --- katılım + D/Y/B
   pane.append(h('div', { class: 'sn-grid2' },
@@ -67,7 +67,7 @@ function okulRender(pane, sel, ctx) {
       cRank.length ? AnViz.bars({ rows: cRank.map(r => ({ label: r.sinif, sub: `${r.took} öğrenci`, vals: [r.avg] })), series: [{ name: 'Sınıf ortalaması', c: 1 }], fmt: v => nf(v, 1) + '%', max: 100, min: 0, xFmt: v => v + '%', label: 'Sınıf ortalamaları' }) : null,
       h('h3', { class: 'og-h3' }, 'Sınıf × sınav'), snTable('ok-classes', cc, cRows.concat(clsAll), { onRow: r => { if (!r.all) { AN.cls = r.sinif; AN.tab = 'sinif'; ctx.draw(); window.scrollTo(0, 0); } }, cls: r => (r.all ? 'sn-all' : '') }),
       h('p', { class: 'small muted' }, 'Hücre rengi okul ortalamasından farktır (mavi: üstünde, kırmızı: altında). Bir sınıfa tıklayınca Sınıf sekmesinde ayrıntısı açılır.')));
-    if (lm.length) pane.append(h('div', { class: 'card' }, h('h2', null, 'Sınıf × ders · ortalama başarı %'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table', id: 'ok-matrix' }, h('thead', null, h('tr', null, h('th', null, 'Sınıf'), lm.map(x => h('th', { class: 'num' }, x.name)), h('th', { class: 'num' }, 'Genel'))),
+    if (lm.length) pane.append(h('div', { class: 'card' }, h('h2', null, 'Sınıf × ders · ortalama başarı %'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table zebra-tbl', id: 'ok-matrix' }, h('thead', null, h('tr', null, h('th', null, 'Sınıf'), lm.map(x => h('th', { class: 'num' }, x.name)), h('th', { class: 'num' }, 'Genel'))),
       h('tbody', null, cRows.map(r => h('tr', { class: 'an-row', onclick: () => { AN.cls = r.sinif; AN.tab = 'sinif'; ctx.draw(); window.scrollTo(0, 0); } }, h('td', null, h('b', null, r.sinif)), r.les.map((v, i) => snCell(v, oA[i])), h('td', { class: 'num' }, h('b', null, ogP(r.avg))))),
         h('tr', { class: 'sn-all' }, h('td', null, 'Okul'), oA.map(v => h('td', { class: 'num' }, ogP(v))), h('td', { class: 'num' }, ogP(ogMean(av))))))),
       h('p', { class: 'small muted' }, 'Hücre rengi dersin okul ortalamasından farktır; koyu mavi o dersteki en güçlü, kırmızı en zayıf sınıfı gösterir.')));
@@ -78,7 +78,7 @@ function okulRender(pane, sel, ctx) {
     const ordL = lessRank.slice().sort((a, b) => b.v - a.v);
     pane.append(h('div', { class: 'card' }, h('h2', null, 'Derslerin güçlü ve zayıf yönleri · ortalama başarı %'), AnViz.bars({ rows: ordL.map(o => ({ label: o.x.name, vals: [o.v] })), series: [{ name: 'Okul', c: 1 }], fmt: v => nf(v, 1) + '%', max: 100, min: 0, xFmt: v => v + '%', label: 'Ders başarıları' }),
       h('h3', { class: 'og-h3' }, 'Ders başarısının sınavlara göre gidişi'), AnViz.line({ labels: L, sub: S, full: F, label: 'Ders gidişi', fmt: v => nf(v, 1) + '%', yFmt: v => nf(v, 0) + '%', floor: 0, ceil: 100, missText: 'bu sınavda yok', series: lm.slice(0, 8).map((x, i) => ({ name: x.name, c: x.slot, pts: oPer[i] })) }),
-      h('h3', { class: 'og-h3' }, 'Ders özeti'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table', id: 'ok-lessons' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), ['Ort. başarı', 'İlk → son', 'En iyi sınıf', 'En düşük sınıf', 'Gidiş'].map(x => h('th', { class: x === 'Gidiş' ? '' : 'num' }, x)))),
+      h('h3', { class: 'og-h3' }, 'Ders özeti'), h('div', { class: 'tablewrap' }, h('table', { class: 'an-table zebra-tbl', id: 'ok-lessons' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), ['Ort. başarı', 'İlk → son', 'En iyi sınıf', 'En düşük sınıf', 'Gidiş'].map(x => h('th', { class: x === 'Gidiş' ? '' : 'num' }, x)))),
         h('tbody', null, ordL.map(o => h('tr', null, h('td', null, h('span', { class: 'vz-key vz-b' + o.x.slot }), ' ', o.x.name), h('td', { class: 'num' }, h('b', null, ogP(o.v))), h('td', { class: 'num', style: o.d != null ? snHeat(o.d, 0, 15) : null }, o.d == null ? '' : ogSgn(o.d, 1, ' puan')), h('td', { class: 'num' }, o.cBest ? `${o.cBest.c} ${ogP(o.cBest.v)}` : ''), h('td', { class: 'num' }, o.cWorst ? `${o.cWorst.c} ${ogP(o.cWorst.v)}` : ''), h('td', null, anSpark(oPer[o.i]))))))),
       h('p', { class: 'small muted' }, '“İlk → son”: dersin ilk ve son geçtiği sınav arasındaki okul ortalaması farkı (yüzde puan).')));
   }
@@ -97,6 +97,74 @@ function okulRender(pane, sel, ctx) {
   const gcols = [{ label: 'Ö.No', cell: s => h('td', { class: 'nowrap' }, s.no) }, { label: 'Ad Soyad', cell: s => h('td', null, s.ad || '(adı yok)') }, { label: 'Sınıf', cell: s => h('td', null, s.sinif) }, { label: 'İlk', num: true, cell: s => h('td', { class: 'num' }, ogP(s.first)) }, { label: 'Son', num: true, cell: s => h('td', { class: 'num' }, ogP(s.last)) }, { label: 'Değişim', num: true, cell: s => h('td', { class: 'num' }, anDelta(s.gain, 'pct')) }, { label: 'Gelişim', cell: s => h('td', null, anSpark(s.pct)) }];
   if (withGain.length) pane.append(h('div', { class: 'sn-grid2' }, h('div', { class: 'card' }, h('h2', null, 'En çok gelişen öğrenciler (ilk → son)'), gainers.length ? snTable('ok-gain', gcols, gainers, { onRow: s => ctx.openStudent(s.no) }) : h('div', { class: 'muted small' }, 'Yükselen öğrenci yok.')), h('div', { class: 'card' }, h('h2', null, 'Dikkat: en çok gerileyen öğrenciler (ilk → son)'), losers.length ? snTable('ok-loss', gcols, losers, { onRow: s => ctx.openStudent(s.no) }) : h('div', { class: 'muted small' }, 'Gerileyen öğrenci yok.'))));
   okLast = { exams, st, cRows, lm, oA, oPer, lessRank, taken: ranked, all, nEx, notes, school, rosterN, classes, hi60, lo40, up, down, av };
+
+  // --- İlçe / İl Geneli Ortak Sınav ve Okul Raporu (yalnızca ilçe, il ve sistem yöneticisinde görünür)
+  const uRole = App.state && App.state.user ? App.state.user.role : '';
+  if (uRole === 'admin' || uRole === 'il' || uRole === 'ilce') {
+    const regBox = h('div', { class: 'card', id: 'ok-region-box' },
+      h('div', { class: 'row between' },
+        h('h2', { style: { margin: 0 } }, uRole === 'il' ? 'İl Geneli Ortak Sınav ve Okul Raporu' : uRole === 'ilce' ? 'İlçe Geneli Ortak Sınav ve Okul Raporu' : 'İlçe & İl Geneli Ortak Sınav Raporu'),
+        h('span', { class: 'pill brand' }, uRole === 'il' ? App.state.user.il : uRole === 'ilce' ? `${App.state.user.ilce} / ${App.state.user.il}` : 'Tüm Bölge')),
+      h('p', { class: 'small muted', style: { margin: '.35rem 0 .6rem' } }, 'Yetki alanınızdaki tüm okulların ortak sınavlardaki net, puan ve ders bazlı ortalamalarını tek raporda karşılaştırın ve yazdırın.'),
+      h('div', { id: 'ok-region-body', class: 'small muted' }, 'Bölge raporu yükleniyor…'));
+    pane.prepend(regBox);
+
+    (async () => {
+      const target = $('#ok-region-body', regBox);
+      if (!target) return;
+      try {
+        const reg = await api('regionalOverview', {
+          il: uRole === 'il' || uRole === 'ilce' ? App.state.user.il : (Sel.v.il || ''),
+          ilce: uRole === 'ilce' ? App.state.user.ilce : (Sel.v.ilce || '')
+        });
+        if (!target.isConnected) return;
+        clear(target);
+        const rSchools = reg.schools || [], rExams = reg.exams || [];
+        const dersler = Array.from(new Set(rSchools.flatMap(s => Object.keys(s.dersOrt || {}))));
+        const activeSch = school ? String(school.okulKodu) : '';
+
+        target.append(
+          h('div', { class: 'stats', style: { marginBottom: '.7rem' } },
+            ogStat(reg.schoolCount || 0, 'toplam okul'),
+            ogStat(reg.totalStudents || 0, 'kayıtlı öğrenci'),
+            ogStat(rExams.length, 'ortak sınav'),
+            ogStat(rSchools.length ? nf(rSchools.reduce((a, s) => a + (s.avgNet || 0), 0) / Math.max(1, rSchools.filter(s => s.avgNet != null).length), 2) : '–', 'bölge ort. net')
+          ),
+          rSchools.length
+            ? h('div', { class: 'tablewrap' },
+                h('table', { class: 'an-table zebra-tbl' },
+                  h('thead', null, h('tr', null,
+                    ['Sıra', 'Okul', 'İlçe', 'Öğrenci', 'Sınav', 'Ort. Net', 'Ort. Puan', 'Başarı %', ...dersler.map(d => d + ' Net')].map((t, idx) => h('th', { class: idx >= 3 ? 'num' : '' }, t)))),
+                  h('tbody', null, rSchools.map((s, idx) =>
+                    h('tr', {
+                      class: 'an-row' + (String(s.okulKodu) === activeSch ? ' mine' : ''),
+                      title: 'Bu okulu seçip analizini açmak için tıklayın',
+                      onclick: () => { AN.okul = String(s.okulKodu); Sel.set({ okul: String(s.okulKodu) }); ctx.draw(); }
+                    },
+                      h('td', { class: 'num' }, h('b', null, s.rank || (idx + 1))),
+                      h('td', null, h('b', null, s.okulAdi)),
+                      h('td', null, s.ilce || ''),
+                      h('td', { class: 'num' }, s.ogrenciSayisi ?? 0),
+                      h('td', { class: 'num' }, s.sinavSayisi ?? 0),
+                      h('td', { class: 'num' }, s.avgNet != null ? h('b', null, nf(s.avgNet, 2)) : '–'),
+                      h('td', { class: 'num' }, s.avgPuan != null ? nf(s.avgPuan, 2) : '–'),
+                      h('td', { class: 'num' }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'),
+                      ...dersler.map(d => h('td', { class: 'num' }, (s.dersOrt && s.dersOrt[d] != null) ? nf(s.dersOrt[d], 2) : '–'))
+                    )
+                  ))
+                )
+              )
+            : h('div', { class: 'muted' }, 'Bu bölgede henüz okul veya ortak sınav sonucu bulunmuyor.')
+        );
+      } catch (e) {
+        if (target.isConnected) {
+          clear(target);
+          target.append(h('div', { class: 'alert warn' }, 'Bölge raporu yüklenemedi: ' + (e.message || e)));
+        }
+      }
+    })();
+  }
+
 }
 
 function okulExport(sel, ctx) {

@@ -6,7 +6,7 @@
  * Karneler her zaman beyaz kâğıt görünümündedir (koyu temada da); işaretli sınavlar karneye girer. Yardımcılar analiz-ogr.js / analiz-sinif.js'tedir. */
 'use strict';
 
-AN.krMode = 'ogr'; AN.krStu = ''; AN.krCls = ''; AN.krScls = undefined; AN.krRcls = undefined; AN.krRank = true; AN.krNotes = true; AN.krChart = true;
+AN.krMode = 'ogr'; AN.krStu = ''; AN.krCls = ''; AN.krScls = undefined; AN.krRcls = undefined; AN.krRank = true; AN.krNotes = true; AN.krChart = true; AN.krPlan = true; AN.krProfile = 'kocluk';
 let krToken = 0, krBusy = false, krLast = null;
 const krPending = () => krBusy;
 const krDate = () => new Date().toLocaleDateString('tr-TR');
@@ -21,29 +21,58 @@ const krFoot = who => h('footer', { class: 'kr-ft' }, h('div', { class: 'kr-sign
 const krBar = (p, c) => h('div', { class: 'kr-bar', title: `Başarı %${p == null ? '–' : nf(p, 1)}${c != null ? ' · sınıf ortalaması %' + nf(c, 1) : ''}` }, p != null ? h('u', { style: { width: Math.max(0, Math.min(100, p)) + '%' } }) : null, c != null ? h('i', { style: { left: Math.max(0, Math.min(100, c)) + '%' } }) : null);
 
 
-/** Çoklu sınav (tek ders + çok ders dahil) profesyonel gelişim yorumu üretir. */
-function krProComment(m, exams) {
+/** Rapor profiline göre (Koçluk / Rehberlik / İdare) profesyonel pedagojik değerlendirme üretir. */
+function krProComment(m, exams, profile) {
+  const prof = profile || AN.krProfile || 'kocluk';
   const took = m.taken, pcs = took.map(p => p.pct).filter(v => v != null), les = (m.les || []).filter(l => l.pct != null);
   const parts = [];
+  const meanP = pcs.length ? ogMean(pcs) : null;
+  const sd = pcs.length >= 2 ? Math.sqrt(pcs.reduce((s, v) => s + (v - meanP) * (v - meanP), 0) / pcs.length) : 0;
+  const diff = pcs.length >= 2 ? (pcs[pcs.length - 1] - pcs[0]) : 0;
+
   if (pcs.length >= 2) {
-    const first = pcs[0], last = pcs[pcs.length - 1], diff = last - first, slope = ogSlope(pcs);
-    const meanP = ogMean(pcs), sd = Math.sqrt(pcs.reduce((s, v) => s + (v - meanP) * (v - meanP), 0) / pcs.length);
+    const first = pcs[0], last = pcs[pcs.length - 1];
     const trendTxt = diff > 3 ? `belirgin bir yükseliş (${ogSgn(diff, 1, ' puan')})` : diff < -3 ? `düşüş eğilimi (${ogSgn(diff, 1, ' puan')})` : `dengeli bir seyir (${ogSgn(diff, 1, ' puan')})`;
-    const stabTxt = sd <= 6 ? 'istikrarlı bir performans' : sd <= 12 ? 'orta düzeyde dalgalı bir performans' : 'sınavdan sınava dalgalanan bir performans';
-    parts.push(`Seçilen ${took.length} sınavda %${nf(first, 1)} → %${nf(last, 1)} ile ${trendTxt} ve ${stabTxt} sergilemektedir (ortalama %${nf(meanP, 1)}).`);
+    const stabTxt = sd <= 6 ? 'istikrarlı bir çalışma disiplini' : sd <= 12 ? 'orta düzeyde dalgalı bir seyir' : 'sınavdan sınava belirgin dalgalanma';
+    parts.push(`Seçilen ${took.length} sınavda %${nf(first, 1)} → %${nf(last, 1)} ile ${trendTxt} ve ${stabTxt} gözlenmektedir (genel ortalama %${nf(meanP, 1)}).`);
   } else if (pcs.length === 1) {
-    parts.push(`Seçilen sınavda %${nf(pcs[0], 1)} genel başarı elde etmiştir.`);
+    parts.push(`Değerlendirilen sınavda %${nf(pcs[0], 1)} genel başarı düzeyine ulaşmıştır.`);
   }
+
+  let top = null, low = null;
   if (les.length >= 2) {
     const sorted = les.slice().sort((a, b) => b.pct - a.pct);
-    const top = sorted[0], low = sorted[sorted.length - 1];
-    parts.push(`Ders bazında en güçlü alanı ${top.name} (%${nf(top.pct, 1)}), öncelikli desteklenmesi gereken alanı ${low.name} (%${nf(low.pct, 1)}) dersidir.`);
+    top = sorted[0]; low = sorted[sorted.length - 1];
+    parts.push(`Akademik profilde en güçlü ders ${top.name} (%${nf(top.pct, 1)}), öncelikli telafi gerektiren ders ${low.name} (%${nf(low.pct, 1)}) olarak öne çıkmaktadır.`);
   } else if (les.length === 1) {
-    parts.push(`${les[0].name} dersinde ortalama %${nf(les[0].pct, 1)} başarı görülmektedir.`);
+    top = les[0];
+    parts.push(`${top.name} dersinde ortalama %${nf(top.pct, 1)} başarı kaydedilmiştir.`);
   }
+
+  // Boş/yanlış davranışı (sınav stratejisi analizi)
+  const avgY = ogMean(took.map(p => p.r.Y)), avgB = ogMean(took.map(p => p.r.B));
+  if (avgY != null && avgB != null) {
+    if (avgY > avgB * 2.2 && avgY >= 6) {
+      parts.push('Yanlış sayısının boş sayısına göre yüksek olması, emin olunmayan sorularda tahmin/acele işaretleme eğilimine işaret etmektedir; turlama tekniği ve soru kökü okuma pratiği önerilir.');
+    } else if (avgB > avgY * 1.8 && avgB >= 8) {
+      parts.push('Boş bırakılan soru oranının yüksek olması süre yönetimi veya konu eksiği kaynaklıdır; deneme süresini derslere bölerek deneme pratiği artırılmalıdır.');
+    }
+  }
+
+  if (prof === 'kocluk') {
+    if (low) parts.push(`Koçluk Hedefi: Önümüzdeki 2 haftalık periyotta ${low.name} dersindeki eksik kazanımlara günlük 25–30 soru ve konu özeti tekrarı ayrılmalı, ${top ? top.name : 'güçlü dersler'} haftalık karma testlerle korunmalıdır.`);
+  } else if (prof === 'rehberlik') {
+    const missedCount = (m.per ? m.per.length : 0) - took.length;
+    if (missedCount > 0) parts.push(`Devam ve Takip Notu: Kapsamdaki ${missedCount} sınava katılım sağlanmamıştır; veli-öğrenci görüşmesinde sınav takibi ve motivasyon sürekliliği desteklenmelidir.`);
+    if (sd > 12) parts.push('Sınav kaygısı, dikkat dağınıklığı veya hazırlık düzensizliği açısından rehberlik birimi ile bireysel görüşme planlanması faydalı olacaktır.');
+  } else if (prof === 'idare') {
+    const bandLabel = meanP >= 75 ? 'Üst Başarı Grubu (%75+)' : meanP >= 50 ? 'Orta / Gelişime Açık Grup (%50–74)' : 'Öncelikli Akademik Destek Grubu (%50 altı)';
+    parts.push(`Kurul / İdare Sınıflandırması: ${bandLabel}. Destekleme ve Yetiştirme Kursları (DYK) ile bireysel etüt planlamasında önceliklendirilmelidir.`);
+  }
+
   const hasSingle = exams.some(e => (e.lessons || []).length === 1), hasMulti = exams.some(e => (e.lessons || []).length > 1);
   if (hasSingle && hasMulti) {
-    parts.push('Tek derslik konu sınavları ile çok dersli denemeler ders bazında aynı ölçekte (% başarı) karşılaştırılmıştır.');
+    parts.push('Tek ders konu testleri ile çok dersli denemeler ders bazında ortak % başarı ölçeğinde değerlendirilmiştir.');
   }
   return parts.join(' ');
 }
@@ -58,7 +87,8 @@ function krStudentPage(m, exams, school, opt) {
     .concat(opt.rank ? [krKpi(rk('snf', 'snfN'), 'sınıf sırası (son sınav)'), krKpi(rk('okul', 'okulN'), 'okul sırası (son sınav)')] : [krKpi(nets.length ? nf(ogMean(nets), 2) : '', 'ortalama net'), krKpi(best ? ogP(best.pct) : '', 'en yüksek başarı', best ? ksCut(best.n.name, 18) : '')]);
   const L = ogLbl(per.map(p => p.n)), S = ogSub(per.map(p => p.n)), F = ogFull(per.map(p => p.n));
   const sec = (t, ...kids) => h('section', { class: 'kr-sec' }, h('h3', null, t), ...kids);
-  const page = h('section', { class: 'kr-page', 'data-no': m.no }, krHead('ÖĞRENCİ SINAV KARNESİ', school),
+  const profTitle = opt.profile === 'rehberlik' ? 'REHBERLİK & AKADEMİK GELİŞİM RAPORU' : opt.profile === 'idare' ? 'İDARE / KURUL DEĞERLENDİRME RAPORU' : 'ÖĞRENCİ SINAV & KOÇLUK KARNESİ';
+  const page = h('section', { class: 'kr-page', 'data-no': m.no }, krHead(profTitle, school),
     h('div', { class: 'kr-id' }, h('div', null, h('span', null, 'Öğrenci'), h('b', null, m.ad)), h('div', null, h('span', null, 'Numara'), h('b', null, m.no)), h('div', null, h('span', null, 'Sınıf'), h('b', null, m.sinif || '–')), h('div', null, h('span', null, 'Kapsam'), h('b', null, krRange(exams)))),
     h('div', { class: 'kr-kpis' }, kpis));
   if (opt.chart && per.length) page.append(sec('Başarı gelişimi (%)', krChart(AnViz.line({ h: 190, labels: L, sub: S, full: F, label: m.ad + ' başarı gelişimi', fmt: v => nf(v, 1) + '%', yFmt: v => nf(v, 0) + '%', floor: 0, ceil: 100, missText: 'girmedi', series: [{ name: 'Öğrenci', c: 1, pts: per.map(p => (p.r ? p.pct : null)) }, { name: 'Sınıf ortalaması', c: 2, dash: true, pts: per.map(p => (p.r ? p.cls.pct : null)) }, { name: 'Okul ortalaması', c: 3, dash: true, pts: per.map(p => (p.r ? p.ok.pct : null)) }] }))));
@@ -73,11 +103,28 @@ function krStudentPage(m, exams, school, opt) {
   if (lessons.length) page.append(sec('Ders ders başarı', h('table', { class: 'kr-table zebra-tbl' }, h('thead', null, h('tr', null, h('th', null, 'Ders'), ['Ort. D', 'Ort. Y', 'Ort. B', 'Ort. net', 'Başarı %'].map(x => h('th', { class: 'num' }, x)), h('th', { class: 'kr-barcol' }, 'Başarı (çizgi: sınıf ort.)'), ['Sınıf ort. %', 'Fark'].map(x => h('th', { class: 'num' }, x)), h('th', null, 'Gidiş'))),
     h('tbody', null, lessons.map(l => { const d = l.pct != null && l.clsPct != null ? l.pct - l.clsPct : null; return h('tr', null, h('td', null, h('span', { class: 'vz-key vz-b' + l.slot }), ' ', l.name), h('td', { class: 'num' }, nf(l.D, 1)), h('td', { class: 'num' }, nf(l.Y, 1)), h('td', { class: 'num' }, nf(l.B, 1)), h('td', { class: 'num' }, nf(l.net)), h('td', { class: 'num', style: snHeat(l.pct, l.clsPct) }, h('b', null, ogP(l.pct))), h('td', { class: 'kr-barcol' }, krBar(l.pct, l.clsPct)), h('td', { class: 'num' }, ogP(l.clsPct)), h('td', { class: 'num' }, d == null ? '' : ogSgn(d, 1)), h('td', null, anSpark(l.rows.map(x => (x ? x.pct : null))))); })))));
   if (opt.notes) {
-    const pro = krProComment(m, exams), notes = ogNotes(m).slice(0, 5);
+    const pro = krProComment(m, exams, opt.profile), notes = ogNotes(m).slice(0, 5);
     if (pro || notes.length) {
-      page.append(sec('Profesyonel Gelişim Değerlendirmesi',
-        pro ? h('div', { class: 'karne-comment' }, h('b', null, 'Genel Yorum: '), pro) : null,
+      const lbl = opt.profile === 'rehberlik' ? 'Rehberlik & Gelişim Analizi: ' : opt.profile === 'idare' ? 'Kurul & İdare Değerlendirmesi: ' : 'Eğitim Koçluğu Değerlendirmesi: ';
+      page.append(sec('Profesyonel Gelişim ve Eğitim Koçluğu Değerlendirmesi',
+        pro ? h('div', { class: 'karne-comment' }, h('b', null, lbl), pro) : null,
         notes.length ? h('ul', { class: 'kr-notes' }, notes.map(t => h('li', null, t))) : null));
+    }
+  }
+  if (opt.plan !== false && typeof ogBuildActionPlan === 'function') {
+    const plan = ogBuildActionPlan(m.no, exams, ogRoster(exams));
+    if (plan && plan.steps && plan.steps.length) {
+      page.append(sec('Kişiye Özel Konu / Kazanım Eylem Planı',
+        h('table', { class: 'kr-table zebra-tbl' },
+          h('thead', null, h('tr', null, ['Öncelik', 'Ders', 'Eksik Konu / Kazanım', 'Önerilen Çalışma Adımı'].map(x => h('th', null, x)))),
+          h('tbody', null, plan.steps.slice(0, 6).map(st => h('tr', null,
+            h('td', { class: 'num' }, h('b', null, '#' + st.oncelik)),
+            h('td', null, h('b', null, st.ders)),
+            h('td', null, st.baslik),
+            h('td', null, st.detay)
+          )))
+        )
+      ));
     }
   }
   page.append(krFoot());
@@ -130,7 +177,7 @@ function krReportPages(exams, roster, cls, opt) {
 function karneRender(pane, sel, ctx) {
   krToken++; krBusy = false;
   const exams = ogSorted(sel), roster = ogRoster(exams), classes = anClasses(exams), school = schoolByCode(AN.okul), mode = AN.krMode;
-  const opt = { rank: AN.krRank, notes: AN.krNotes, chart: AN.krChart };
+  const opt = { rank: AN.krRank, notes: AN.krNotes, chart: AN.krChart, plan: AN.krPlan, profile: AN.krProfile };
   const ck = mode === 'sinif' ? 'krScls' : mode === 'rapor' ? 'krRcls' : 'krCls';   // sınıf seçimi sekme moduna göre ayrı tutulur
   if (AN[ck] === undefined) AN[ck] = mode === 'sinif' && classes.length ? (AN.cls && classes.includes(AN.cls) ? AN.cls : classes[0]) : '';
   if (AN[ck] && !classes.includes(AN[ck])) AN[ck] = '';
@@ -146,7 +193,13 @@ function karneRender(pane, sel, ctx) {
   const status = h('span', { class: 'small muted', id: 'kr-status' }), printBtn = h('button', { class: 'btn primary', id: 'kr-print', onclick: () => anPrint() }, '🖨 Yazdır / PDF olarak kaydet');
   pane.append(h('div', { class: 'card no-print', id: 'kr-ctl' }, h('div', { class: 'row an-f' }, h('b', null, 'Karne'), ogSeg([['ogr', 'Öğrenci karnesi'], ['sinif', 'Sınıf karneleri (her öğrenci bir sayfa)'], ['rapor', 'Sınıf / okul raporu']], mode, k => { AN.krMode = k; ctx.renderTab(); }),
     mode === 'ogr' ? [q, stuCls] : clsAll, h('span', { class: 'grow' }), status, printBtn),
-    h('div', { class: 'row an-f', style: { marginTop: '.5rem' } }, tog('kr-t-rank', 'krRank', 'Sıralamalar'), tog('kr-t-chart', 'krChart', 'Grafik'), tog('kr-t-notes', 'krNotes', 'Değerlendirme yazıları'), h('span', { class: 'small muted' }, `${exams.length} işaretli sınav karneye girer.`)),
+    h('div', { class: 'row an-f', style: { marginTop: '.5rem' } },
+      ogSeg([['kocluk', 'Koçluk Raporu'], ['rehberlik', 'Rehberlik Raporu'], ['idare', 'İdare / Kurul']], AN.krProfile, p => { AN.krProfile = p; ctx.renderTab(); }),
+      tog('kr-t-rank', 'krRank', 'Sıralamalar'),
+      tog('kr-t-chart', 'krChart', 'Grafik'),
+      tog('kr-t-notes', 'krNotes', 'Koçluk yorumu'),
+      tog('kr-t-plan', 'krPlan', 'Eylem planı'),
+      h('span', { class: 'small muted' }, `${exams.length} işaretli sınav karneye girer.`)),
     mode === 'ogr' ? hits : null,
     h('p', { class: 'small muted', style: { margin: '.5rem 0 0' } }, 'PDF için: “Yazdır / PDF” düğmesine basın, açılan pencerede hedef olarak “PDF olarak kaydet” seçin (kâğıt A4 dikey, arka plan grafikleri açık).')));
   if (mode === 'ogr' && cur && !q.value) { const inCls = Array.from(roster.values()).filter(s => s.sinif === cur).sort(ogByName); hits.append(inCls.map(s => h('button', { type: 'button', class: 'btn sm og-hit' + (s.no === stuNo ? ' primary' : ''), 'data-no': s.no, onclick: () => pick(s.no) }, `${s.no} · ${s.ad || '(adı yok)'}`))); }
