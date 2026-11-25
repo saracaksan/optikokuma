@@ -373,7 +373,7 @@ function appsTab(pane) {
  * Model alanı boşsa sunucu sağlayıcının güncel model listesini çeker ve seçilen seviyenin (hızlı / dengeli / en yetenekli) en yeni modelini kullanır. */
 /** OpenAI uyumlu, ücretsiz katmanı olan hizmetler için hazır doldurma (model adları değişebilir; "Dene" ile doğrulanır). */
 const COMPAT_PRESETS = [
-  { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'qwen/qwen3.8-27b', tip: 'console.groq.com: ücretsiz anahtar, dakikalık/günlük sınırlı' },
+  { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', tip: 'console.groq.com: ücretsiz anahtar, dakikalık/günlük sınırlı' },
   { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openrouter/free', tip: 'openrouter.ai: ücretsiz modeller yönlendirici; günlük istek sınırı düşük' },
   { id: 'mistral', name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', tip: 'console.mistral.ai: ücretsiz "Experiment" katmanı' }
 ];
@@ -381,33 +381,78 @@ function aiTab(pane) {
   const box = h('div', { id: 'ai-box' }); pane.append(box);
   const TIER_L = { auto: 'Otomatik (dengeli)', fast: 'Hızlı', balanced: 'Dengeli', best: 'En yetenekli' }, SRC_L = { list: 'sağlayıcının güncel model listesi', default: 'yerleşik varsayılan (liste alınamadı)', manual: 'elle girilmiş model', none: '' };
   let st = null, d = null;
-  const fresh = s0 => ({ provider: s0.config.provider || 'auto', tier: s0.config.tier || 'auto', keys: {}, clear: [], models: Object.assign({}, s0.config.models), compatUrl: s0.config.compatUrl || '', compatName: s0.config.compatName || '' });
+  const fresh = s0 => ({
+    provider: s0.config.provider || 'auto',
+    tier: s0.config.tier || 'auto',
+    keys: {},
+    clear: [],
+    models: Object.assign({}, s0.config.models),
+    compatUrl: s0.config.compatUrl || '',
+    compatName: s0.config.compatName || ''
+  });
   async function load(refresh) {
-    clear(box).append(h('p', { class: 'muted' }, refresh ? 'Sağlayıcıların model listeleri yeniden taranıyor…' : 'Yükleniyor…'));
+    clear(box).append(h('p', { class: 'muted' }, refresh ? 'Sağlayıcıların model listeleri ve anahtarları yeniden taranıyor…' : 'Yükleniyor…'));
     try { st = await api('aiStatus', refresh ? { refresh: true } : {}); d = fresh(st); draw(); } catch (e) { clear(box).append(h('div', { class: 'alert bad' }, e.message)); }
   }
   const field = (label, input, hint) => h('div', { class: 'field' }, h('label', null, label), input, hint ? h('div', { class: 'small muted' }, hint) : null);
   const select = (id, opts, val, on) => { const el = h('select', { id, onchange: e => on(e.target.value) }, opts.map(([v, l]) => h('option', { value: v }, l))); el.value = val; return el; };
+
+  function renderTriedLog(outEl, tried) {
+    if (!Array.isArray(tried) || !tried.length) return;
+    const rows = tried.map(t => h('tr', null,
+      h('td', null, h('b', null, t.providerName || t.provider), ' ', h('span', { class: 'mono small' }, `#${t.keyIndex || 1}`)),
+      h('td', { class: 'mono small' }, t.model || '–'),
+      h('td', null, t.ok ? h('span', { class: 'pill ok' }, 'Başarılı') : h('span', { class: 'pill bad' }, t.code || 'HATA')),
+      h('td', { class: 'small' }, t.ok ? `Yanıt alındı (${t.ms} ms)` : (t.reason || 'Başarısız'))
+    ));
+    outEl.append(
+      h('div', { class: 'tablewrap', style: { marginTop: '.45rem', maxHeight: '180px' } },
+        h('table', { class: 'zebra-tbl' },
+          h('thead', null, h('tr', null, ['Sağlayıcı / Anahtar', 'Model', 'Durum', 'Hata Nedeni / Geçiş Bilgisi'].map(x => h('th', null, x)))),
+          h('tbody', null, rows)
+        )
+      )
+    );
+  }
+
   function provCard(o) {
     const isC = o.id === 'compat', hint = st.config.keys[o.id], out = h('div', { id: 'ai-test-out-' + o.id }), cleared = d.clear.includes(o.id);
-    const keyIn = h('input', { type: 'password', id: 'ai-key-' + o.id, autocomplete: 'new-password', spellcheck: false, placeholder: hint && !cleared ? 'Kayıtlı anahtarı değiştirmek için yenisini yapıştırın' : 'API anahtarını yapıştırın', oninput: e => { d.keys[o.id] = e.target.value; } });
+    const keyIn = h('textarea', {
+      rows: 2,
+      id: 'ai-key-' + o.id,
+      autocomplete: 'off',
+      spellcheck: false,
+      placeholder: hint && !cleared
+        ? 'Yeni anahtar(lar) eklemek/değiştirmek için satır satır yapıştırın'
+        : 'Bir veya birden çok API anahtarını alt alta / virgülle yapıştırın (kota dolunca sıradakine geçer)',
+      oninput: e => { d.keys[o.id] = e.target.value; }
+    });
     const mdl = h('input', { type: 'text', id: 'ai-model-' + o.id, value: d.models[o.id] || '', placeholder: isC ? 'Zorunlu: model adı' : 'otomatik (en yeni)', autocomplete: 'off', oninput: e => { d.models[o.id] = e.target.value.trim(); } });
     const testBtn = h('button', { class: 'btn sm', id: 'ai-test-' + o.id, onclick: async ev => {
-      const b = ev.currentTarget; b.disabled = true; clear(out).append(h('span', { class: 'muted small' }, 'Deneniyor…'));
-      try { const r = await api('aiTest', { provider: o.id, tier: d.tier, model: d.models[o.id] || undefined }, { timeout: 120000 }); clear(out).append(h('div', { class: 'alert ok' }, `Çalışıyor: ${r.providerName} · ${r.model} · ${r.ms} ms${r.tried && r.tried.length > 1 ? ` (${r.tried.length - 1} yedek denendi)` : ''}`)); }
-      catch (e) { clear(out).append(h('div', { class: 'alert bad' }, e.message)); }
+      const b = ev.currentTarget; b.disabled = true; clear(out).append(h('span', { class: 'muted small' }, 'Döngüsel test yapılıyor…'));
+      try {
+        const r = await api('aiTest', { provider: o.id, tier: d.tier, model: d.models[o.id] || undefined }, { timeout: 120000 });
+        clear(out).append(h('div', { class: 'alert ok' }, `Çalışıyor: ${r.providerName} (Anahtar #${r.keyIndex || 1}) · ${r.model} · ${r.ms} ms${r.tried && r.tried.length > 1 ? ` (${r.tried.length - 1} deneme/yedek geçişi yapıldı)` : ''}`));
+        renderTriedLog(out, r.tried);
+      } catch (e) {
+        clear(out).append(h('div', { class: 'alert bad' }, e.message));
+        if (e.tried) renderTriedLog(out, e.tried);
+      }
       b.disabled = false;
-    } }, 'Dene');
+    } }, 'Dene & Yedekleri Göster');
     return h('div', { class: 'card', 'data-prov': o.id },
-      h('div', { class: 'row between' }, h('h3', { style: { margin: 0 } }, o.name), h('span', { class: 'pill ' + (o.ok && !cleared ? 'ok' : 'warn') }, o.ok && !cleared ? 'hazır' : isC && o.hasKey ? 'adres/model eksik' : 'anahtar yok')),
+      h('div', { class: 'row between' },
+        h('h3', { style: { margin: 0 } }, o.name),
+        h('span', { class: 'pill ' + (o.ok && !cleared ? 'ok' : 'warn') }, o.ok && !cleared ? `hazır${o.keyCount > 1 ? ` (${o.keyCount} anahtar)` : ''}` : isC && o.hasKey ? 'adres/model eksik' : 'anahtar yok')
+      ),
       h('div', { class: 'grid', style: { marginTop: '.5rem' } },
-        field('API anahtarı' + (hint ? ` (kayıtlı: ${hint})` : ''), keyIn, 'Yalnızca sunucuya yazılır; bir daha gösterilmez.'),
-        field(isC ? 'Model adı' : 'Model (isteğe bağlı)', mdl, isC ? '' : 'Boş = en yeni model kendiliğinden seçilir. Belirli bir modele kilitlemek için adını yazın.')),
-      isC ? h('div', { class: 'grid' }, field('Hizmet adresi', h('input', { type: 'text', id: 'ai-compat-url', value: d.compatUrl, placeholder: 'https://…/v1', oninput: e => { d.compatUrl = e.target.value.trim(); } }), 'OpenAI uyumlu /chat/completions sunan hizmetin taban adresi (https).'), field('Görünen ad', h('input', { type: 'text', id: 'ai-compat-name', value: d.compatName, placeholder: 'örn: Groq', oninput: e => { d.compatName = e.target.value; } }))) : null,
-      isC ? h('div', { class: 'small', style: { marginTop: '.3rem' } }, h('span', { class: 'muted' }, 'Ücretsiz katmanı olan hizmetler için hazır doldur: '), ...COMPAT_PRESETS.map(pr => h('button', { class: 'btn sm', id: 'ai-preset-' + pr.id, type: 'button', title: pr.tip, style: { marginRight: '.25rem' }, onclick: () => { d.compatUrl = pr.url; d.compatName = pr.name; d.models.compat = pr.model; draw(); } }, pr.name)), h('div', { class: 'muted' }, 'Anahtarı hizmetin sitesinden ücretsiz alıp yukarıya yapıştırın. Ücretsiz katman sınırları ve model adları sık değişir; görüntü destekleyen güncel bir model adını hizmetin model sayfasından kontrol edin (Dene düğmesi çalışıp çalışmadığını gösterir). Ücretsiz katmanlarda gönderilen veri sağlayıcı tarafından kaydedilebilir; yalnızca boş form görüntüsü gider, öğrenci bilgisi gitmez.')) : null,
+        field('API Anahtarı / Çoklu Anahtar Listesi' + (hint ? ` (kayıtlı: ${hint})` : ''), keyIn, 'Satır satır veya virgülle birden çok anahtar girebilirsiniz. Kota bitince bir sonraki anahtara/sağlayıcıya geçer.'),
+        field(isC ? 'Model adı' : 'Model (isteğe bağlı)', mdl, isC ? '' : 'Boş = güncel model kendiliğinden seçilir. Belirli bir modele kilitlemek için adını yazın.')),
+      isC ? h('div', { class: 'grid' }, field('Hizmet adresi', h('input', { type: 'text', id: 'ai-compat-url', value: d.compatUrl, placeholder: 'https://…/v1', oninput: e => { d.compatUrl = e.target.value.trim(); } }), 'OpenAI uyumlu /chat/completions sunan hizmetin taban adresi (https).'), field('Görünen ad', h('input', { type: 'text', id: 'ai-compat-name', value: d.compatName, placeholder: 'örn: Cerebras / xAI', oninput: e => { d.compatName = e.target.value; } }))) : null,
+      isC ? h('div', { class: 'small', style: { marginTop: '.3rem' } }, h('span', { class: 'muted' }, 'Hazır doldur: '), ...COMPAT_PRESETS.map(pr => h('button', { class: 'btn sm', id: 'ai-preset-' + pr.id, type: 'button', title: pr.tip, style: { marginRight: '.25rem' }, onclick: () => { d.compatUrl = pr.url; d.compatName = pr.name; d.models.compat = pr.model; draw(); } }, pr.name))) : null,
       o.ok ? h('div', { class: 'small', style: { marginTop: '.4rem' } }, h('b', null, 'Seçilen modeller: '), ['fast', 'balanced', 'best'].map(t => `${TIER_L[t]}: ${o.models[t] || '—'}`).join(' · '), o.source !== 'none' ? h('span', { class: 'muted' }, ` — kaynak: ${SRC_L[o.source] || o.source}`) : null) : null,
       o.ok && o.listError ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, 'Model listesi alınamadı: ' + o.listError) : null,
-      h('div', { class: 'row', style: { marginTop: '.5rem' } }, o.ok ? testBtn : null, hint && !cleared ? h('button', { class: 'btn sm danger', id: 'ai-clear-' + o.id, onclick: () => { d.clear.push(o.id); delete d.keys[o.id]; draw(); } }, 'Anahtarı sil') : null, cleared ? h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'Kaydedince anahtar silinir.') : null), out);
+      h('div', { class: 'row', style: { marginTop: '.5rem' } }, o.ok ? testBtn : null, hint && !cleared ? h('button', { class: 'btn sm danger', id: 'ai-clear-' + o.id, onclick: () => { d.clear.push(o.id); delete d.keys[o.id]; draw(); } }, 'Anahtarları sil') : null, cleared ? h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'Kaydedince anahtarlar silinir.') : null), out);
   }
   async function save(btn) {
     btn.disabled = true;
@@ -419,13 +464,15 @@ function aiTab(pane) {
   }
   function draw() {
     clear(box); const ready = st.providers.filter(o => o.ok).length;
-    box.append(h('div', { class: 'card' }, h('h2', null, 'Yapay zekâ ayarları'),
-      h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Harici form tanıtılırken yapay zekâ bölümlerin yerini ve sayılarını (satır/sütun), ders adlarını, şık harflerini ve blok türünü önerir; baloncukların kesin konumunu yine görüntü işleme milimetrik bulur ve elle yaptığınız ayarlar korunur. Anahtar eklemek zorunlu değildir. Birden fazla sağlayıcı ekleyebilirsiniz: biri yanıt vermezse sıradakine geçilir. Model alanı boş bırakılırsa sunucu her seferinde (6 saatlik önbellekle) sağlayıcının güncel model listesini okur ve en yeni sürümü seçer; yeni model çıkınca ayar değiştirmeniz gerekmez.'),
+    box.append(h('div', { class: 'card' }, h('h2', null, 'Yapay zekâ çoklu sağlayıcı ve döngüsel yedekleme'),
+      h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Hem optik form tanımada hem PDF sonuç listesi okumada kullanılır. Her sağlayıcıya birden çok API anahtarı (ör. 4–5 ayrı ücretsiz Gemini hesabı) alt alta yapıştırabilirsiniz. Bir anahtarın kotası biterse veya hata verirse sistem hata kodunu ve Türkçe nedenini kaydedip otomatik olarak sıradaki anahtara ve diğer ücretsiz sağlayıcılara (Gemini → OpenRouter → Groq → Mistral) geçer.'),
       h('div', { class: 'grid' },
-        field('Öncelikli sağlayıcı', select('ai-provider', [['auto', 'Otomatik (hazır olan ilk)']].concat(st.providers.map(o => [o.id, o.name])), d.provider, v => { d.provider = v; })),
-        field('Hız ↔ yetenek', select('ai-tier', [['auto', TIER_L.auto], ['fast', 'Hızlı (en ucuz, en az bekleme)'], ['balanced', 'Dengeli'], ['best', 'En yetenekli (en yavaş)']], d.tier, v => { d.tier = v; }), 'Kullanıcılar ekranda kendi seçimlerini de yapabilir; seçmezlerse bu ayar kullanılır.')),
+        field('Öncelikli sağlayıcı', select('ai-provider', [['auto', 'Otomatik döngüsel (ücretsizler sırayla)']].concat(st.providers.map(o => [o.id, o.name])), d.provider, v => { d.provider = v; })),
+        field('Hız ↔ yetenek', select('ai-tier', [['auto', TIER_L.auto], ['fast', 'Hızlı'], ['balanced', 'Dengeli'], ['best', 'En yetenekli']], d.tier, v => { d.tier = v; }))),
       h('div', { class: 'row', style: { marginTop: '.4rem' } }, h('button', { class: 'btn primary', id: 'ai-save', onclick: ev => save(ev.currentTarget) }, 'Kaydet'), h('button', { class: 'btn', id: 'ai-refresh', onclick: () => load(true) }, 'Modelleri yeniden tara'), h('span', { class: 'small muted' }, `${ready} sağlayıcı hazır`))),
       ...st.providers.map(provCard));
   }
+  load(false);
+}
   load(false);
 }
