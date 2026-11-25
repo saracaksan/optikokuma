@@ -1408,38 +1408,71 @@ function aDeleteStudents(u, p) {
  * Model adı yazılmazsa her sağlayıcının KENDİ model listesi (GET /models) sorulur, adlardan seviye (hızlı / dengeli / en güçlü) ve sürüm çıkarılır,
  * en yeni sürüm seçilir; liste 6 saat önbellekte tutulur. Böylece yeni model çıkınca kod değişmeden otomatik güncel sürüme geçilir.
  * Seçilen model hata verirse sıradaki model / sağlayıcı denenir (en çok AI_MAX_TRIES deneme). */
-var AI_USER_PER_HOUR = 40, AI_ALL_PER_DAY = 1000, AI_MAX_B64 = 4500000, AI_MAX_TRIES = 4, AI_MODELS_TTL = 21600;
+var AI_USER_PER_HOUR = 60, AI_ALL_PER_DAY = 2000, AI_MAX_B64 = 4500000, AI_MAX_TRIES = 16, AI_MODELS_TTL = 21600;
 var AI_ROLES = ['questions', 'studentNo', 'schoolCode', 'booklet', 'name', 'surname', 'ignore'];
 var AI_TOK_ = 3000;   // çıktı belirteç sınırı; tam yerleşim (mode:'layout') isteğinde büyür
 var AI_TIERS = ['fast', 'balanced', 'best'];
 var AI_PROVIDERS = [
-  { id: 'anthropic', name: 'Anthropic (Claude)', keyProps: ['ANTHROPIC_API_KEY'], modelProp: 'ANTHROPIC_MODEL', defaults: { fast: 'claude-haiku-5-5', balanced: 'claude-sonnet-5-5', best: 'claude-opus-5-5' } },
-  { id: 'gemini', name: 'Google (Gemini)', keyProps: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], modelProp: 'GEMINI_MODEL', defaults: { fast: 'gemini-3.5-flash-lite', balanced: 'gemini-3.6-flash', best: 'gemini-3.1-pro-preview' } },
-  { id: 'openai', name: 'OpenAI', keyProps: ['OPENAI_API_KEY'], modelProp: 'OPENAI_MODEL', defaults: { fast: 'gpt-6-luna', balanced: 'gpt-6.1-sol', best: 'gpt-6-astra' } },
-  { id: 'compat', name: 'OpenAI uyumlu (özel)', keyProps: ['COMPAT_API_KEY'], modelProp: 'COMPAT_MODEL', defaults: {} }
+  { id: 'gemini', name: 'Google (Gemini — Ücretsiz)', keyProps: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], modelProp: 'GEMINI_MODEL', defaults: { fast: 'gemini-2.5-flash-lite', balanced: 'gemini-2.5-flash', best: 'gemini-2.5-pro' } },
+  { id: 'openrouter', name: 'OpenRouter (Ücretsiz)', keyProps: ['OPENROUTER_API_KEY'], modelProp: 'OPENROUTER_MODEL', base: 'https://openrouter.ai/api/v1', defaults: { fast: 'openrouter/free', balanced: 'openrouter/free', best: 'openrouter/free' } },
+  { id: 'groq', name: 'Groq (Ücretsiz)', keyProps: ['GROQ_API_KEY'], modelProp: 'GROQ_MODEL', base: 'https://api.groq.com/openai/v1', defaults: { fast: 'meta-llama/llama-4-scout-17b-16e-instruct', balanced: 'meta-llama/llama-4-scout-17b-16e-instruct', best: 'meta-llama/llama-4-maverick-17b-128e-instruct' } },
+  { id: 'mistral', name: 'Mistral (Ücretsiz)', keyProps: ['MISTRAL_API_KEY'], modelProp: 'MISTRAL_MODEL', base: 'https://api.mistral.ai/v1', defaults: { fast: 'mistral-small-latest', balanced: 'mistral-small-latest', best: 'pixtral-large-latest' } },
+  { id: 'anthropic', name: 'Anthropic (Claude)', keyProps: ['ANTHROPIC_API_KEY'], modelProp: 'ANTHROPIC_MODEL', defaults: { fast: 'claude-haiku-4-5', balanced: 'claude-sonnet-4-5', best: 'claude-opus-4-5' } },
+  { id: 'openai', name: 'OpenAI', keyProps: ['OPENAI_API_KEY'], modelProp: 'OPENAI_MODEL', defaults: { fast: 'gpt-4o-mini', balanced: 'gpt-4o', best: 'gpt-4o' } },
+  { id: 'compat', name: 'OpenAI uyumlu (Özel)', keyProps: ['COMPAT_API_KEY'], modelProp: 'COMPAT_MODEL', defaults: {} }
 ];
-function aiDef_(id) { for (var i = 0; i < AI_PROVIDERS.length; i++) if (AI_PROVIDERS[i].id === id) return AI_PROVIDERS[i]; return null; }
-function aiModelName_(v) { v = str_(v); return /^[A-Za-z0-9][A-Za-z0-9._:\/\-]{1,99}$/.test(v) ? v : ''; }
-function aiBase_(v) { v = str_(v).replace(/\/+$/, ''); return /^https:\/\/[^\s"'<>]{4,200}$/.test(v) ? v : ''; }
 
-/** Tüm sağlayıcıların ayarı (anahtarlar yalnızca sunucuda). */
+var AI_CODE_TR_ = {
+  AIBUSY: 'Kota / hız limiti doldu (429/503)',
+  AIKEY: 'API anahtarı geçersiz veya yetkisiz (401/403)',
+  AIMODEL: 'Model bulunamadı veya erişim yok (404)',
+  AIPARSE: 'Yanıt geçerli JSON formatında değil',
+  AISCOPE: 'Apps Script dış bağlantı (UrlFetchApp) izni yok',
+  AIERR: 'Sağlayıcı bağlantı / sunucu hatası',
+  NOAI: 'API anahtarı tanımlı değil'
+};
+
+function aiDef_(id) { for (var i = 0; i < AI_PROVIDERS.length; i++) if (AI_PROVIDERS[i].id === id) return AI_PROVIDERS[i]; return null; }
+function aiModelName_(v) { v = str_(v); return /^[A-Za-z0-9][A-Za-z0-9._:\/\-]{1,120}$/.test(v) ? v : ''; }
+function aiBase_(v) { v = str_(v).replace(/\/+$/, ''); return /^https:\/\/[^\s"'<>]{4,200}$/.test(v) ? v : ''; }
+/** Satır satır veya virgülle girilen birden çok API anahtarını (en çok 15 adet) ayırır. */
+function aiSplitKeys_(raw) {
+  var seen = {}, out = [];
+  String(raw || '').split(/[\r\n,;]+/).forEach(function (k) {
+    k = k.trim();
+    if (k.length >= 8 && !seen[k]) { seen[k] = 1; out.push(k); }
+  });
+  return out.slice(0, 15);
+}
+
+/** Tüm sağlayıcıların ayarı (anahtarlar yalnızca sunucuda; çoklu anahtar destekli). */
 function aiCfg_() {
   var ps = PropertiesService.getScriptProperties(), list = [];
   AI_PROVIDERS.forEach(function (d) {
-    var key = ''; d.keyProps.forEach(function (k) { if (!key) key = str_(ps.getProperty(k)); });
-    var mv = trLower_(str_(ps.getProperty(d.modelProp))), c = { id: d.id, name: d.name, def: d, key: key, hasKey: !!key, model: mv === 'auto' ? '' : aiModelName_(ps.getProperty(d.modelProp)) };
+    var rawKey = ''; d.keyProps.forEach(function (k) { if (!rawKey) rawKey = str_(ps.getProperty(k)); });
+    var keys = aiSplitKeys_(rawKey);
+    var mv = trLower_(str_(ps.getProperty(d.modelProp)));
+    var c = {
+      id: d.id, name: d.name, def: d, key: keys[0] || '', keys: keys, keyCount: keys.length, hasKey: keys.length > 0,
+      model: mv === 'auto' ? '' : aiModelName_(ps.getProperty(d.modelProp)),
+      base: d.base || ''
+    };
     if (d.id === 'anthropic') {
       c.version = str_(ps.getProperty('ANTHROPIC_VERSION')); c.auth = trLower_(str_(ps.getProperty('ANTHROPIC_AUTH')));
       c.url = str_(ps.getProperty('ANTHROPIC_URL')) || 'https://api.anthropic.com/v1/messages'; c.workspace = str_(ps.getProperty('ANTHROPIC_WORKSPACE_ID'));
     }
     if (d.id === 'compat') { c.base = aiBase_(ps.getProperty('COMPAT_BASE_URL')); c.label = clean_(ps.getProperty('COMPAT_NAME'), 40); if (c.label) c.name = c.label; }
-    c.ok = !!key && (d.id !== 'compat' || (!!c.base && !!c.model));
+    c.ok = keys.length > 0 && (d.id !== 'compat' || (!!c.base && !!c.model));
     list.push(c);
   });
   var pv = trLower_(str_(ps.getProperty('AI_PROVIDER'))), tr = trLower_(str_(ps.getProperty('AI_TIER')));
   return { providers: list, provider: pv === 'auto' || aiDef_(pv) ? pv : 'auto', tier: AI_TIERS.indexOf(tr) >= 0 ? tr : 'auto' };
 }
-function aiKeyHint_(k) { return !k ? '' : (k.length >= 12 ? '••••' + k.slice(-4) : '••••'); }
+function aiKeyHint_(keys) {
+  if (!keys || !keys.length) return '';
+  var first = keys[0], h = first.length >= 12 ? '••••' + first.slice(-4) : '••••';
+  return keys.length > 1 ? (keys.length + ' anahtar (' + h + ', …)') : h;
+}
 function aiKeyTag_(k) { var h = 7; for (var i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) % 1000003; return h.toString(36); }
 
 /* ---- HTTP ---- */
@@ -1457,8 +1490,7 @@ function aiHttp_(method, url, headers, body) {
   return { code: r.getResponseCode(), text: txt, json: safeParse_(txt) };
 }
 var AI_SCOPE_MSG = 'Apps Script, dış bağlantı (UrlFetchApp) izni almamış. Düzeltmek için: (1) Apps Script → Proje ayarları → "appsscript.json bildirim dosyasını düzenleyicide göster" kutusunu işaretleyin, appsscript.json içindeki oauthScopes listesinde ' +
-  '"https://www.googleapis.com/auth/script.external_request" bulunsun (pakettekini yapıştırın); (2) düzenleyicide işlev olarak izinleriVer\'i seçip Çalıştır deyin ve açılan izin penceresinde İzin ver\'i seçin; (3) Dağıt → Dağıtımları yönet → kalem → Sürüm: Yeni sürüm → Dağıt. Sonra bu ekranda tekrar deneyin.';
-/** Düzenleyiciden bir kez çalıştırın: dış bağlantı iznini ister (yapay zekâ için gerekli). */
+  '"https://www.googleapis.com/auth/script.external_request" bulunsun; (2) düzenleyicide işlev olarak izinleriVer\'i seçip Çalıştır deyin ve izin verin; (3) Dağıt → Dağıtımları yönet → Yeni sürüm → Dağıt.';
 function izinleriVer() {
   var r = UrlFetchApp.fetch('https://www.google.com/generate_204', { muteHttpExceptions: true });
   Logger.log('Dış bağlantı izni tamam (HTTP ' + r.getResponseCode() + '). Şimdi Dağıt → Dağıtımları yönet → Yeni sürüm.');
@@ -1474,12 +1506,12 @@ function aiErr_(c, r) {
   if (/model_not_found|does not have access to model|model .{0,60}(not found|does not exist|not supported)|is not found for api version|unknown model/i.test(em)) return fail_(c.name + ': model kullanılamıyor. ' + em, 'AIMODEL');
   if (code === 401 || code === 403 || (code === 400 && /api[ _-]?key/i.test(em))) return fail_(c.name + ' anahtarı reddedildi (' + code + '). ' + keyName + ' değerini kontrol edin. Ayrıntı: ' + em, 'AIKEY');
   if (code === 404) return fail_(c.name + ': model bulunamadı. ' + em, 'AIMODEL');
-  if (code === 429 || code === 503 || code === 529) return fail_(c.name + ' şu an yoğun veya kota doldu (' + code + '). ' + em, 'AIBUSY');
+  if (code === 429 || code === 503 || code === 529) return fail_(c.name + ' kota/limit doldu veya yoğun (' + code + '). ' + em, 'AIBUSY');
   return fail_(c.name + ' isteği başarısız (' + code + '): ' + em, 'AIERR');
 }
 function aiOk_(r) { return r.code >= 200 && r.code < 300 && r.json; }
 
-/* ---- Anthropic: başlık kümeleri (ayarlıysa yalnızca o; değilse önce güncel Bearer + yeni sürüm, olmazsa x-api-key + 2023-06-01; çalışan küme önbelleğe alınır) ---- */
+/* ---- Anthropic başlıkları ---- */
 function aiAnthSets_(c) {
   function mk(auth, version) { var h = { 'anthropic-version': version }; if (auth === 'x-api-key') h['x-api-key'] = c.key; else h['Authorization'] = 'Bearer ' + c.key; if (c.workspace) h['anthropic-workspace-id'] = c.workspace; return h; }
   if (c.auth || c.version) return [mk(c.auth || 'bearer', c.version || '2026-10-21')];
@@ -1503,7 +1535,7 @@ function aiAnthFetch_(c, method, url, body) {
   throw aiErr_(c, last);
 }
 
-/* ---- Model listeleri (her sağlayıcının kendi uç noktası) ---- */
+/* ---- Model listeleri ---- */
 function aiListModels_(c) {
   var out = [], r;
   if (c.id === 'anthropic') {
@@ -1520,15 +1552,14 @@ function aiListModels_(c) {
       });
       tok = r.json.nextPageToken || ''; if (!tok) break;
     }
-  } else {
-    r = aiHttp_('get', (c.id === 'openai' ? 'https://api.openai.com/v1' : c.base) + '/models', { 'Authorization': 'Bearer ' + c.key });
+  } else if (c.id === 'openai') {
+    r = aiHttp_('get', 'https://api.openai.com/v1/models', { 'Authorization': 'Bearer ' + c.key });
     if (!aiOk_(r)) throw aiErr_(c, r);
     (r.json.data || []).forEach(function (m) { if (m && m.id) out.push(String(m.id)); });
   }
   return out;
 }
 
-/* ---- Model adından seviye + sürüm çıkarma ---- */
 function aiClassify_(pid, rawId) {
   var id = String(rawId).replace(/^models\//, ''), low = id.toLowerCase(), m, parts, ver, date, fam, tier, w;
   if (pid === 'anthropic') {
@@ -1554,28 +1585,31 @@ function aiClassify_(pid, rawId) {
     else if (/sol|mini/.test(low)) { tier = 'balanced'; w = 2; }
     else if (/astra/.test(low)) { tier = 'best'; w = 3; }
     else if (/^gpt-\d+(\.\d+)?o?(-\d{4}-\d{2}-\d{2})?$/.test(low)) { tier = 'best'; w = 2; }
-    else { tier = 'balanced'; w = 0; }   // tanınmayan yeni ad: yine de aday olsun, hata verirse sıradakine geçilir
+    else { tier = 'balanced'; w = 0; }
     return { id: id, tier: tier, key: [Number(m[1]), Number(m[2] || 0), w], stable: !/preview/.test(low), snap: /-\d{4}-\d{2}-\d{2}$|-\d{4}$/.test(low) };
   }
   return null;
 }
-function aiCmp_(a, b) {   // en yeni / en güçlü başa
+function aiCmp_(a, b) {
   var n = Math.max(a.key.length, b.key.length);
   for (var i = 0; i < n; i++) { var x = a.key[i] || 0, y = b.key[i] || 0; if (x !== y) return y - x; }
   if (a.stable !== b.stable) return a.stable ? -1 : 1;
   if (a.snap !== b.snap) return a.snap ? 1 : -1;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
-/** Kimlik listesinden seviye başına sıralı adaylar: { fast:[ids], balanced:[ids], best:[ids] } */
 function aiRank_(pid, ids) {
   var by = { fast: [], balanced: [], best: [] }, seen = {}, out = {};
   (ids || []).forEach(function (id) { var k = aiClassify_(pid, id); if (k && !seen[k.id]) { seen[k.id] = 1; by[k.tier].push(k); } });
   AI_TIERS.forEach(function (t) { by[t].sort(aiCmp_); out[t] = by[t].map(function (k) { return k.id; }); });
   return out;
 }
-/** Sağlayıcının kullanılabilir modelleri (önbellekli). force=true → yeniden sor. */
 function aiModels_(c, force) {
-  if (c.id === 'compat') return { ids: c.model ? [c.model] : [], listed: false, err: '' };
+  if (c.id === 'compat' || c.id === 'openrouter' || c.id === 'groq' || c.id === 'mistral') {
+    var d = c.def.defaults || {}, arr = [];
+    if (c.model) arr.push(c.model);
+    ['balanced', 'fast', 'best'].forEach(function (t) { if (d[t] && arr.indexOf(d[t]) < 0) arr.push(d[t]); });
+    return { ids: arr, listed: false, err: '' };
+  }
   var cache = CacheService.getScriptCache(), key = 'aim_' + c.id + '_' + aiKeyTag_(c.key), hit = null;
   if (!force) { try { hit = safeParse_(cache.get(key)); } catch (e) { } if (hit && hit.ids) return hit; }
   var ids = null, err = '';
@@ -1586,36 +1620,57 @@ function aiModels_(c, force) {
   try { cache.put(key, JSON.stringify(out), ids ? AI_MODELS_TTL : 300); } catch (e) { }
   return out;
 }
-/** Seviye başına seçilen model: liste varsa listeden, yoksa yerleşik varsayılan. */
 function aiPicks_(c, md) {
+  if (c.id === 'compat' || c.id === 'openrouter' || c.id === 'groq' || c.id === 'mistral') {
+    var d = c.def.defaults || {}, p0 = {};
+    AI_TIERS.forEach(function (t) { p0[t] = c.model || d[t] || ''; });
+    return { picks: p0, ranked: { fast: p0.fast ? [p0.fast] : [], balanced: p0.balanced ? [p0.balanced] : [], best: p0.best ? [p0.best] : [] } };
+  }
   var rk = aiRank_(c.id, md.ids), p = {};
   AI_TIERS.forEach(function (t) { p[t] = rk[t][0] || (md.listed ? '' : (c.def.defaults[t] || '')); });
   return { picks: p, ranked: rk };
 }
 
-/* ---- Aday planı ---- */
+/* ---- Çoklu anahtar + çoklu sağlayıcı döngüsel aday planı ---- */
 var AI_ORDER_ = { auto: ['balanced', 'best', 'fast'], balanced: ['balanced', 'best', 'fast'], fast: ['fast', 'balanced', 'best'], best: ['best', 'balanced', 'fast'] };
 function aiPlan_(c, tier, model, force, md0) {
-  var out = [], seen = {};
-  function add(m, t, src) { if (m && !seen[m]) { seen[m] = 1; out.push({ c: c, model: m, tier: t, source: src }); } }
-  if (model) add(model, 'manual', 'request');
-  if (c.model) add(c.model, 'manual', 'config');
-  if (c.id === 'compat') return out;
-  var md = md0 || aiModels_(c, force), pk = aiPicks_(c, md).picks;
-  (AI_ORDER_[tier] || AI_ORDER_.auto).forEach(function (t) { add(pk[t], t, md.listed ? 'list' : 'default'); });
+  var models = [], seen = {};
+  function addM(m, t, src) { if (m && !seen[m]) { seen[m] = 1; models.push({ model: m, tier: t, source: src }); } }
+  if (model) addM(model, 'manual', 'request');
+  if (c.model) addM(c.model, 'manual', 'config');
+  if (c.id !== 'compat') {
+    var md = md0 || aiModels_(c, force), pk = aiPicks_(c, md).picks;
+    (AI_ORDER_[tier] || AI_ORDER_.auto).forEach(function (t) { addM(pk[t], t, md.listed ? 'list' : 'default'); });
+  }
+  var out = [], keys = c.keys && c.keys.length ? c.keys : (c.key ? [c.key] : []);
+  // Önce birincil modelle tüm anahtarları dene (kota dolunca aynı sağlayıcının 2., 3., 4. anahtarına geçer)
+  models.forEach(function (mObj) {
+    keys.forEach(function (k, ki) {
+      var cCopy = {};
+      for (var prop in c) cCopy[prop] = c[prop];
+      cCopy.key = k;
+      cCopy.keyIndex = ki + 1;
+      out.push({ c: cCopy, model: mObj.model, tier: mObj.tier, source: mObj.source, keyIndex: ki + 1 });
+    });
+  });
   return out;
 }
-/** Sağlayıcılar arası sıra: birincil sağlayıcının ilk 2 adayı, sonra diğerlerinin ilk 2'si, sonra kalanlar. */
 function aiChain_(cfg, prov, tier, model) {
   var active = cfg.providers.filter(function (c) { return c.ok; });
-  if (prov && prov !== 'auto') { var one = active.filter(function (c) { return c.id === prov; }); if (!one.length) throw fail_('Seçilen yapay zekâ sağlayıcısı tanımlı değil.', 'NOAI'); active = one.concat(active.filter(function (c) { return c.id !== prov; })); }
-  else if (cfg.provider !== 'auto') { var pri = active.filter(function (c) { return c.id === cfg.provider; }); active = pri.concat(active.filter(function (c) { return c.id !== cfg.provider; })); }
-  var plans = active.map(function (c, i) {
-    var md = aiModels_(c, false);
-    return aiPlan_(c, tier, i === 0 && model && md.ids.indexOf(model) >= 0 ? model : '', false, md);
-  });
+  if (prov && prov !== 'auto') {
+    var one = active.filter(function (c) { return c.id === prov; });
+    if (!one.length) throw fail_('Seçilen yapay zekâ sağlayıcısı tanımlı değil.', 'NOAI');
+    active = one.concat(active.filter(function (c) { return c.id !== prov; }));
+  } else if (cfg.provider !== 'auto') {
+    var pri = active.filter(function (c) { return c.id === cfg.provider; });
+    active = pri.concat(active.filter(function (c) { return c.id !== cfg.provider; }));
+  }
   var out = [];
-  [0, 2].forEach(function (from) { plans.forEach(function (pl) { pl.slice(from, from === 0 ? 2 : 10).forEach(function (x) { out.push(x); }); }); });
+  active.forEach(function (c, i) {
+    var md = aiModels_(c, false);
+    var pl = aiPlan_(c, tier, i === 0 && model && md.ids.indexOf(model) >= 0 ? model : '', false, md);
+    pl.forEach(function (x) { out.push(x); });
+  });
   return out;
 }
 
@@ -1637,13 +1692,16 @@ function aiRunGemini_(c, model, system, text, img, mt) {
   return out;
 }
 function aiRunOpenAI_(c, model, system, text, img, mt) {
-  var url = (c.id === 'openai' ? 'https://api.openai.com/v1' : c.base) + '/chat/completions', content = [{ type: 'text', text: text }];
+  var baseUrl = c.id === 'openai' ? 'https://api.openai.com/v1' : c.base;
+  var url = baseUrl + '/chat/completions', content = [{ type: 'text', text: text }];
   if (img) content.push({ type: 'image_url', image_url: { url: 'data:' + mt + ';base64,' + img, detail: 'high' } });
+  var headers = { 'Authorization': 'Bearer ' + c.key };
+  if (c.id === 'openrouter') { headers['HTTP-Referer'] = 'https://siracaksan.github.io'; headers['X-Title'] = 'Sirac Aksan Optik Okuma'; }
   var variants = c.id === 'openai' ? [['max_completion_tokens', true], ['max_completion_tokens', false]] : [['max_tokens', true], ['max_tokens', false], ['max_completion_tokens', false]], r = null;
   for (var i = 0; i < variants.length; i++) {
     var body = { model: model, messages: [{ role: 'system', content: system }, { role: 'user', content: content }] };
-    body[variants[i][0]] = Math.max(6000, AI_TOK_); if (variants[i][1]) body.response_format = { type: 'json_object' };
-    r = aiHttp_('post', url, { 'Authorization': 'Bearer ' + c.key }, body);
+    body[variants[i][0]] = Math.max(4096, AI_TOK_); if (variants[i][1]) body.response_format = { type: 'json_object' };
+    r = aiHttp_('post', url, headers, body);
     if (aiOk_(r)) break;
     if (!(r.code === 400 && /response_format|json_object|max_tokens|max_completion_tokens|unsupported|not supported|unrecognized/i.test(aiErrText_(c, r)))) break;
   }
@@ -1665,28 +1723,32 @@ function aiExtractJson_(text) {
   if (a < 0 || b <= a) return null;
   return safeParse_(s.slice(a, b + 1));
 }
-/** Adayları sırayla dene; ilk geçerli sonucu döndür. check(text) geçerli nesne ya da null döndürür. */
+/** Adayları (tüm anahtarlar ve tüm sağlayıcılar) döngüsel olarak dener; her başarısız denemenin hata kodunu ve Türkçe nedenini raporlar. */
 function aiTry_(chain, system, text, img, mt, check) {
-  var tried = [], dead = {}, firstErr = null, n = 0;
-  if (!chain.length) throw fail_('Kullanılabilir yapay zekâ modeli bulunamadı. Ayarlardan model adını elle yazın.', 'AIMODEL');
+  var tried = [], deadKeys = {}, firstErr = null, n = 0;
+  if (!chain.length) throw fail_('Kullanılabilir yapay zekâ modeli bulunamadı. Yönetim → Yapay zekâ ekranından ücretsiz anahtar ekleyin.', 'AIMODEL');
   for (var i = 0; i < chain.length && n < AI_MAX_TRIES; i++) {
-    var cand = chain[i]; if (dead[cand.c.id]) continue; n++;
+    var cand = chain[i], keySig = cand.c.id + '#' + cand.keyIndex;
+    if (deadKeys[keySig]) continue;
+    n++;
     var t0 = Date.now();
     try {
       var out = aiRun_(cand, system, text, img, mt), val = check(out);
       if (!val) throw fail_(cand.c.name + ' yanıtı çözümlenemedi.', 'AIPARSE');
-      tried.push({ provider: cand.c.id, model: cand.model, ok: true, ms: Date.now() - t0 });
+      tried.push({ provider: cand.c.id, providerName: cand.c.name, keyIndex: cand.keyIndex, model: cand.model, ok: true, ms: Date.now() - t0 });
       return { value: val, raw: out, cand: cand, tried: tried };
     } catch (err) {
       var code = err && err.code || 'AIERR';
-      tried.push({ provider: cand.c.id, model: cand.model, ok: false, code: code, ms: Date.now() - t0 });
+      var reason = AI_CODE_TR_[code] || clean_(err && err.message, 120) || 'Bilinmeyen hata';
+      tried.push({ provider: cand.c.id, providerName: cand.c.name, keyIndex: cand.keyIndex, model: cand.model, ok: false, code: code, reason: reason, ms: Date.now() - t0 });
       if (!firstErr) firstErr = err;
-      if (code === 'AISCOPE') break;   // izin sorunu tüm sağlayıcılar için aynı: boşuna denemeyin
-      if (code === 'AIKEY') dead[cand.c.id] = 1;
-      if (code === 'AIMODEL') { try { aiModels_(cand.c, true); } catch (e) { } }   // liste eskimiş olabilir: sıradaki istekte yenilensin
+      if (code === 'AISCOPE') break;
+      if (code === 'AIKEY' || code === 'AIBUSY') deadKeys[keySig] = 1;   // bu anahtarın kotası bitti veya geçersiz → sonraki anahtara/sağlayıcıya geç
+      if (code === 'AIMODEL') { try { aiModels_(cand.c, true); } catch (e) { } }
     }
   }
-  var e = fail_((firstErr && firstErr.message || 'Yapay zekâ yanıt vermedi.') + (tried.length > 1 ? ' (Denenen: ' + tried.map(function (t) { return t.provider + '/' + t.model + (t.ok ? '' : ' ' + t.code); }).join(', ') + ')' : ''), firstErr && firstErr.code || 'AIERR');
+  var summary = tried.map(function (t) { return t.provider + ' #' + t.keyIndex + ' (' + t.code + ': ' + t.reason + ')'; }).join(' → ');
+  var e = fail_((firstErr && firstErr.message || 'Yapay zekâ yanıt vermedi.') + (tried.length ? ' [Geçiş günlüğü: ' + summary + ']' : ''), firstErr && firstErr.code || 'AIERR');
   e.tried = tried; throw e;
 }
 
@@ -1699,7 +1761,6 @@ var AI_SYSTEM_ = 'You analyse a scan or photo of a BLANK optical answer sheet (O
   'For digit blocks labels = "0123456789" unless printed differently. For booklet blocks labels = the printed booklet letters. For name/surname blocks leave labels empty. ' +
   'Reply with ONLY one JSON object: {"title":string,"blocks":[{"id":string,"role":string,"name":string,"labels":string,"startNo":number|null,"confidence":number,"note":string}],"notes":[string]}.';
 
-/** Tam yerleşim (mode:'layout'): yapay zekâ bölüm kutularını, satır/sütun sayılarını, yönü, türü, adı ve harfleri verir; istemci (forms-ai.js) kutuları gerçek baloncuklara oturtur. İstem forms-ai.js promptText ile aynı içeriktedir. */
 var AI_LAYOUT_SYSTEM_ = 'You are given a scan or photo of a BLANK optical answer sheet (OMR form) used in Turkish school exams (LGS, TYT, AYT, school and publisher trial exams). It may be printed in black, blue, pink or purple ink. The image has already been straightened. ' +
   'Describe the COMPLETE layout of the sheet\'s bubble areas so that software can read marked sheets: where every bubble block is, how many rows and columns of bubbles it has, and what it means. ' +
   'COORDINATES: all positions are in tenths of a percent of the image: x = 0 at the left edge and 1000 at the right edge; y = 0 at the top edge and 1000 at the bottom edge. A light blue dashed grid is drawn every 100 units and labelled on the image edges (top/bottom labels are x, left/right labels are y); read positions against it. ' +
@@ -1712,7 +1773,6 @@ var AI_LAYOUT_SYSTEM_ = 'You are given a scan or photo of a BLANK optical answer
   'The user message lists the blocks image-processing software already found (same units). They are usually right but may be wrong: blocks can be missed (faint print, name grids), merged, split or false. Return EVERY bubble block of the sheet: repeat each correct detected block with its id and action "keep" (and fill role/name/labels/startNo); give corrected values with action "edit" for a wrong one; add a missed block with id null and action "add"; mark a detected block that is not a bubble block with action "remove". ' +
   'Reply with ONLY one JSON object: {"schema":"optinet-layout/1","unit":"permille","title":string,"blocks":[{"id":string|null,"action":"keep"|"edit"|"add"|"remove","role":string,"name":string,"labels":string,"startNo":number|null,"box":[left,top,right,bottom],"rows":number,"cols":number,"axis":"row"|"col","confidence":number,"note":string}],"notes":[string]}.';
 var AI_ACTIONS_ = ['keep', 'edit', 'add', 'remove'];
-/** Tam yerleşim yanıtını temizler: yalnızca bilinen alanlar, sınırlı uzunluk ve sayı aralıkları (istemci ayrıca yeniden doğrular). */
 function aiLayoutClean_(j) {
   var out = [], num = function (v, lo, hi) { var n = Math.round(Number(v)); return isFinite(n) && n >= lo && n <= hi ? n : 0; };
   (j.blocks || []).slice(0, 80).forEach(function (b) {
@@ -1734,7 +1794,7 @@ function aiReqPrefs_(cfg, p) {
 
 function aAiAnalyzeForm(u, p) {
   var cfg = aiCfg_(), any = cfg.providers.some(function (c) { return c.ok; });
-  if (!any) throw fail_('Yapay zekâ anahtarı tanımlı değil. Sistem yöneticisi ayarlardan (veya Betik Özellikleri\'nden) ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY veya COMPAT_API_KEY eklemelidir. (Anahtarsız da tanıma çalışır; yapay zekâ yalnızca ders adı/harf önerir.)', 'NOAI');
+  if (!any) throw fail_('Yapay zekâ anahtarı tanımlı değil. Yönetim → Yapay zekâ ekranından ücretsiz Google Gemini, OpenRouter, Groq veya Mistral anahtarı ekleyin.', 'NOAI');
   var img = String(p.image || '').replace(/^data:image\/\w+;base64,/, '');
   if (!/^[A-Za-z0-9+\/=]+$/.test(img) || img.length < 1000) throw fail_('Görüntü geçersiz.');
   if (img.length > AI_MAX_B64) throw fail_('Görüntü çok büyük; daha küçük gönderin.');
@@ -1762,7 +1822,7 @@ function aAiAnalyzeForm(u, p) {
     var lres = aiTry_(chain, AI_LAYOUT_SYSTEM_, text, img, mt, function (out) { var j = aiExtractJson_(out); return j && Array.isArray(j.blocks) && j.blocks.length ? j : null; }), lj = lres.value;
     var un = String(lj.unit || '').toLowerCase().replace(/[^a-z]/g, '').slice(0, 12), im = lj.image && typeof lj.image === 'object' ? { width: Number(lj.image.width) || 0, height: Number(lj.image.height) || 0 } : null;
     return { schema: 'optinet-layout/1', mode: 'layout', unit: un, image: im, title: clean_(lj.title, 80), blocks: aiLayoutClean_(lj), notes: (Array.isArray(lj.notes) ? lj.notes : []).slice(0, 8).map(function (x) { return clean_(x, 200); }).filter(Boolean),
-      provider: lres.cand.c.id, providerName: lres.cand.c.name, model: lres.cand.model, tier: lres.cand.tier, tried: lres.tried };
+      provider: lres.cand.c.id, providerName: lres.cand.c.name, keyIndex: lres.cand.keyIndex, model: lres.cand.model, tier: lres.cand.tier, tried: lres.tried };
   }
   var res = aiTry_(chain, AI_SYSTEM_, text, img, mt, function (out) { var j = aiExtractJson_(out); return j && Array.isArray(j.blocks) && j.blocks.length ? j : null; }), j = res.value, list = [], seen = {};
   j.blocks.forEach(function (b) {
@@ -1771,35 +1831,132 @@ function aAiAnalyzeForm(u, p) {
     list.push({ id: id, role: role, name: clean_(b.name, 40), labels: labels, startNo: isFinite(st) && st >= 1 && st <= 500 ? Math.round(st) : null, confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0)), note: clean_(b.note, 160) });
   });
   return { title: clean_(j.title, 80), blocks: list, notes: (Array.isArray(j.notes) ? j.notes : []).slice(0, 6).map(function (x) { return clean_(x, 200); }).filter(Boolean),
-    provider: res.cand.c.id, providerName: res.cand.c.name, model: res.cand.model, tier: res.cand.tier, tried: res.tried };
+    provider: res.cand.c.id, providerName: res.cand.c.name, keyIndex: res.cand.keyIndex, model: res.cand.model, tier: res.cand.tier, tried: res.tried };
 }
 
-/** Arayüz için durum: hangi sağlayıcı hazır, hangi model seçilir (yönetici ayrıca ayarları görür; anahtarlar maskelidir). */
+var AI_EXT_PDF_SYSTEM_ = 'You extract structured exam result tables from Turkish school exam PDF reports (e.g. LGS, TYT, Okul Net Listesi). ' +
+  'Read every student row carefully. Do NOT invent missing numbers; use null if unreadable. ' +
+  'Return ONLY one JSON object: {"examName":string,"kaynak":string,"date":string,"puanAdi":string,"lessons":[{"name":string,"short":string,"count":number}],' +
+  '"avg":{"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null},"avgOkul":{"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null},' +
+  '"rows":[{"ogrNo":string,"ad":string,"sinif":string,"sec":[[D,Y,N]],"tot":[D,Y,N],"puan":number|null,"rk":{"snf":number|null,"okul":number|null,"ilce":number|null,"il":number|null,"genel":number|null,"pct":number|null}}],' +
+  '"warnings":[string]}.';
+
+/** İsim benzerliğine göre okul listesinden en olası öğrenci önerilerini (en çok 3 adet) döndürür. */
+function suggestStudentsByName_(schoolStudents, adText) {
+  var qKey = trKey_(adText);
+  if (!qKey || qKey.length < 3 || !schoolStudents.length) return [];
+  var qWords = trLower_(str_(adText)).split(/\s+/).map(trKey_).filter(function (w) { return w.length >= 2; });
+  var scored = [];
+  schoolStudents.forEach(function (s) {
+    var full = (str_(s.ad) + ' ' + str_(s.soyad)).trim(), sKey = trKey_(full);
+    if (!sKey) return;
+    var score = 0;
+    if (sKey === qKey) score = 100;
+    else if (sKey.indexOf(qKey) >= 0 || qKey.indexOf(sKey) >= 0) score = 80;
+    else {
+      var hits = 0;
+      qWords.forEach(function (w) { if (sKey.indexOf(w) >= 0) hits++; });
+      if (hits > 0) score = Math.round((hits / Math.max(1, qWords.length)) * 75);
+    }
+    if (score >= 45) scored.push({ ogrNo: String(s.ogrNo), ad: s.ad, soyad: s.soyad, sinif: str_(s.sinif), score: score });
+  });
+  scored.sort(function (a, b) { return b.score - a.score; });
+  return scored.slice(0, 3);
+}
+
+/**
+ * Yayınevi / kurum PDF sonuç listesini tüm ücretsiz/tanımlı yapay zekâ zinciriyle (çoklu Gemini anahtarı + OpenRouter + Groq + Mistral) okur.
+ * Okul listesinde numarası bulunmayan veya 0 okunan öğrenciler için okul listesinden isim eşleşmesiyle öneri (suggestions) üretir.
+ */
+function aAiParseExternalPdf(u, p) {
+  var cfg = aiCfg_(), any = cfg.providers.some(function (c) { return c.ok; });
+  if (!any) throw fail_('Yapay zekâ anahtarı tanımlı değil. Yönetim → Yapay zekâ ekranından ücretsiz Google Gemini, OpenRouter, Groq veya Mistral anahtarı ekleyin.', 'NOAI');
+  var rawData = String(p.file || p.image || '').replace(/^data:[^;]+;base64,/, '');
+  if (!/^[A-Za-z0-9+\/=]+$/.test(rawData) || rawData.length < 500) throw fail_('PDF veya görüntü verisi geçersiz.');
+  if (rawData.length > 10000000) throw fail_('Dosya çok büyük (en fazla ~7 MB).');
+  var isPdf = p.mediaType === 'application/pdf';
+  var mt = isPdf ? 'application/pdf' : (p.mediaType === 'image/png' ? 'image/png' : 'image/jpeg');
+  throttle_('ai_u_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), AI_USER_PER_HOUR, 3600, 'Saatlik yapay zekâ analiz sınırına ulaştınız.');
+  throttle_('ai_all_' + new Date().toISOString().slice(0, 10), AI_ALL_PER_DAY, 86400, 'Günlük yapay zekâ analiz sınırına ulaşıldı.');
+  var pr = aiReqPrefs_(cfg, p);
+  var chain = aiChain_(cfg, isPdf && !pr.provider ? 'gemini' : pr.provider, pr.tier, pr.model);
+  if (isPdf) {
+    var gemOnly = chain.filter(function (x) { return x.c.id === 'gemini'; });
+    if (gemOnly.length) chain = gemOnly;
+    else throw fail_('Doğrudan PDF okumak için ücretsiz Google Gemini API anahtarı gerekir (aistudio.google.com/apikey) veya tarayıcıdan sayfa görüntüsü olarak gönderin.', 'NOAI');
+  }
+  var prompt = 'Extract the complete exam result table from this Turkish exam report. Preserve Turkish characters, student numbers, class names, D/Y/N per lesson, total D/Y/N, exam score (e.g. LGS Puanı), and ranks (Snf, Okul, İlçe, İl, Genel, %). ' +
+    (p.hint ? 'Note: ' + clean_(p.hint, 200) + ' ' : '') + 'Return valid JSON only.';
+  var res = aiTry_(chain, AI_EXT_PDF_SYSTEM_, prompt, rawData, mt, function (out) {
+    var j = aiExtractJson_(out);
+    return j && Array.isArray(j.rows) ? j : null;
+  });
+  var j = res.value, warnings = Array.isArray(j.warnings) ? j.warnings.slice(0, 30).map(function (w) { return clean_(w, 200); }) : [];
+  var lessons = Array.isArray(j.lessons) && j.lessons.length ? j.lessons : [
+    { name: 'Türkçe', short: 'TÜR', count: 20 }, { name: 'T.C. İnkılap Tarihi', short: 'TAR', count: 10 },
+    { name: 'Din Kültürü', short: 'DİN', count: 10 }, { name: 'İngilizce', short: 'İNG', count: 10 },
+    { name: 'Matematik', short: 'MAT', count: 20 }, { name: 'Fen Bilimleri', short: 'FEN', count: 20 }
+  ];
+
+  // Okul listesi varsa eksik/eşleşmeyen öğrenciler için öneri hazırlığı
+  var schCode = normCode_(p.okulKodu), schStudents = [], schByNo = {};
+  if (schCode && canSeeSchool_(u, schoolMap_()[schCode])) {
+    table_('Students').forEach(function (s) {
+      if (String(s.okulKodu) === schCode) { schStudents.push(s); schByNo[normNo_(s.ogrNo)] = s; }
+    });
+  }
+
+  var errors = [], cleanRows = [];
+  (j.rows || []).forEach(function (r, idx) {
+    var no = normNo_(clean_(r && r.ogrNo, 20)), ad = clean_(r && r.ad, 80);
+    if (!no && !ad) { errors.push('Satır ' + (idx + 1) + ': Öğrenci numarası ve ad okunamadı.'); return; }
+    if (!no || no === '0' || (schStudents.length && !schByNo[no])) {
+      var sugg = suggestStudentsByName_(schStudents, ad);
+      r.suggestions = sugg;
+      if (sugg.length) {
+        warnings.push('Satır ' + (idx + 1) + ' (' + (ad || no) + '): Okul listesinde eşleşmedi; önerilen: ' + sugg[0].ogrNo + ' ' + sugg[0].ad + ' ' + sugg[0].soyad + ' (' + sugg[0].sinif + ').');
+      } else {
+        warnings.push('Satır ' + (idx + 1) + ' (' + (ad || no) + '): Öğrenci numarası eksik veya okul listesinde bulunamadı.');
+      }
+    }
+    if (!r.sec || r.sec.length !== lessons.length) {
+      warnings.push('Satır ' + (idx + 1) + ' (' + (ad || no) + '): Ders sayısı (' + (r.sec ? r.sec.length : 0) + ') başlıkla (' + lessons.length + ') uyuşmuyor.');
+    }
+    cleanRows.push(r);
+  });
+  return {
+    examName: clean_(j.examName, 80), kaynak: clean_(j.kaynak, 60), date: clean_(j.date, 10), puanAdi: clean_(j.puanAdi, 30) || 'LGS Puanı',
+    lessons: lessons, avg: j.avg || null, avgOkul: j.avgOkul || null, rows: cleanRows,
+    warnings: warnings, errors: errors, provider: res.cand.c.id, providerName: res.cand.c.name, keyIndex: res.cand.keyIndex, model: res.cand.model, tried: res.tried
+  };
+}
+
+/** Arayüz için durum: tüm sağlayıcılar, anahtar sayıları ve seçilen modeller. */
 function aiStatusFull_(u, force) {
   var cfg = aiCfg_(), isAdmin = u && u.role === 'admin', provs = [];
   cfg.providers.forEach(function (c) {
-    var o = { id: c.id, name: c.name, ok: c.ok, hasKey: c.hasKey, manualModel: c.model, models: { fast: '', balanced: '', best: '' }, list: [], source: 'none', listError: '' };
+    var o = { id: c.id, name: c.name, ok: c.ok, hasKey: c.hasKey, keyCount: c.keyCount, manualModel: c.model, models: { fast: '', balanced: '', best: '' }, list: [], source: 'none', listError: '' };
     if (c.ok) {
       var md = aiModels_(c, force), pk = aiPicks_(c, md);
-      o.models = pk.picks; o.source = c.id === 'compat' ? 'manual' : md.listed ? 'list' : 'default'; o.listError = md.listed ? '' : md.err;
-      AI_TIERS.forEach(function (t) { pk.ranked[t].slice(0, 6).forEach(function (id) { if (o.list.indexOf(id) < 0) o.list.push(id); }); });
-      if (c.id === 'compat' && c.model) o.list = [c.model];
+      o.models = pk.picks; o.source = (c.id === 'compat' || c.id === 'openrouter' || c.id === 'groq' || c.id === 'mistral') ? 'manual' : md.listed ? 'list' : 'default'; o.listError = md.listed ? '' : md.err;
+      AI_TIERS.forEach(function (t) { (pk.ranked[t] || []).slice(0, 6).forEach(function (id) { if (o.list.indexOf(id) < 0) o.list.push(id); }); });
+      if (c.model && o.list.indexOf(c.model) < 0) o.list.unshift(c.model);
     }
     provs.push(o);
   });
   var primary = null; provs.forEach(function (o) { if (o.ok && !primary && (cfg.provider === 'auto' || cfg.provider === o.id)) primary = o; });
   if (!primary) provs.forEach(function (o) { if (o.ok && !primary) primary = o; });
   var tierPick = AI_ORDER_[cfg.tier][0], out = { available: !!primary, provider: cfg.provider, tier: cfg.tier, model: primary ? (primary.manualModel || primary.models[tierPick] || '') : '', primary: primary ? primary.id : '',
-    providers: provs.filter(function (o) { return isAdmin || o.ok; }).map(function (o) { return isAdmin ? o : { id: o.id, name: o.name, ok: o.ok, models: o.models, list: o.list }; }) };
+    providers: provs.filter(function (o) { return isAdmin || o.ok; }).map(function (o) { return isAdmin ? o : { id: o.id, name: o.name, ok: o.ok, keyCount: o.keyCount, models: o.models, list: o.list }; }) };
   if (isAdmin) {
     out.config = { provider: cfg.provider, tier: cfg.tier, keys: {}, models: {}, compatUrl: '', compatName: '' };
-    cfg.providers.forEach(function (c) { out.config.keys[c.id] = aiKeyHint_(c.key); out.config.models[c.id] = c.model; if (c.id === 'compat') { out.config.compatUrl = c.base || ''; out.config.compatName = c.label || ''; } });
+    cfg.providers.forEach(function (c) { out.config.keys[c.id] = aiKeyHint_(c.keys); out.config.models[c.id] = c.model; if (c.id === 'compat') { out.config.compatUrl = c.base || ''; out.config.compatName = c.label || ''; } });
   }
   return out;
 }
 function aAiStatus(u, p) { return aiStatusFull_(u, !!(p && p.refresh && u && u.role === 'admin')); }
 
-/** Yönetici: sağlayıcı/seviye/model/anahtar ayarlarını Betik Özellikleri'ne yazar. Anahtarlar yalnızca yazılır, geri okunmaz. */
+/** Yönetici: sağlayıcı/seviye/model/çoklu-anahtar ayarlarını Betik Özellikleri'ne yazar. */
 function aAiSaveConfig(u, p) {
   if (u.role !== 'admin') throw fail_('Yetkiniz yok.');
   var ps = PropertiesService.getScriptProperties(), set = {}, del = [];
@@ -1812,8 +1969,9 @@ function aAiSaveConfig(u, p) {
     }
     var k = p.keys && p.keys[d.id];
     if (typeof k === 'string' && k.trim()) {
-      k = k.trim(); if (!/^[\x21-\x7e]{8,400}$/.test(k)) throw fail_(d.name + ' anahtarı geçersiz görünüyor (boşluk/Türkçe karakter olmamalı, en az 8 karakter).');
-      set[d.keyProps[0]] = k; for (var i = 1; i < d.keyProps.length; i++) del.push(d.keyProps[i]);
+      var listK = aiSplitKeys_(k);
+      if (!listK.length || listK.some(function (one) { return !/^[\x21-\x7e]{8,400}$/.test(one); })) throw fail_(d.name + ' anahtar(lar)ı geçersiz görünüyor (boşluk/Türkçe karakter olmamalı, her anahtar en az 8 karakter).');
+      set[d.keyProps[0]] = listK.join('\n'); for (var i = 1; i < d.keyProps.length; i++) del.push(d.keyProps[i]);
     }
     if (Array.isArray(p.clearKeys) && p.clearKeys.indexOf(d.id) >= 0) d.keyProps.forEach(function (n) { del.push(n); });
   });
@@ -1824,19 +1982,18 @@ function aAiSaveConfig(u, p) {
   return aiStatusFull_(u, true);
 }
 
-/** Yönetici: seçilen sağlayıcı/seviye ile küçük bir yazı isteği gönderir; anahtar, model seçimi ve gecikmeyi gösterir. */
+/** Yönetici: seçilen sağlayıcı/anahtarları dener ve geçiş günlüğünü döndürür. */
 function aAiTest(u, p) {
   if (u.role !== 'admin') throw fail_('Yetkiniz yok.');
-  throttle_('ai_t_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), 30, 3600, 'Saatlik yapay zekâ deneme sınırına ulaştınız.');
+  throttle_('ai_t_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), 40, 3600, 'Saatlik yapay zekâ deneme sınırına ulaştınız.');
   var cfg = aiCfg_(), pr = aiReqPrefs_(cfg, p), c = null;
   cfg.providers.forEach(function (x) { if (!c && x.ok && (!pr.provider || pr.provider === 'auto' || pr.provider === x.id)) c = x; });
   if (!c) throw fail_('Seçilen sağlayıcı için anahtar tanımlı değil.', 'NOAI');
   var plan = aiPlan_(c, pr.tier, pr.model, !!p.refresh);
   if (!plan.length) throw fail_(c.name + ' için kullanılabilir model bulunamadı. Model adını elle yazın.', 'AIMODEL');
-  var res = aiTry_(plan.slice(0, 3), 'Reply with one JSON object only.', 'Return exactly {"ok":true}', null, '', function (out) { return aiExtractJson_(out) || (/ok/i.test(out) ? { ok: true } : null); });
-  return { provider: c.id, providerName: c.name, model: res.cand.model, tier: res.cand.tier, source: res.cand.source, ms: res.tried[res.tried.length - 1].ms, tried: res.tried, reply: clean_(res.raw, 80) };
+  var res = aiTry_(plan.slice(0, 6), 'Reply with one JSON object only.', 'Return exactly {"ok":true}', null, '', function (out) { return aiExtractJson_(out) || (/ok/i.test(out) ? { ok: true } : null); });
+  return { provider: c.id, providerName: c.name, keyIndex: res.cand.keyIndex, model: res.cand.model, tier: res.cand.tier, source: res.cand.source, ms: res.tried[res.tried.length - 1].ms, tried: res.tried, reply: clean_(res.raw, 80) };
 }
-
 
 /**
  * İl / İlçe / Admin için bölgesel ortak sınav ve okul özet raporu.
@@ -2001,6 +2158,7 @@ var ACTIONS = {
   aiSaveConfig: { fn: aAiSaveConfig, write: true },
   aiTest: { fn: aAiTest },
   aiAnalyzeForm: { fn: aAiAnalyzeForm },
+  aiParseExternalPdf: { fn: aAiParseExternalPdf },
   listUsers: { fn: aListUsers },
   saveUser: { fn: aSaveUser, write: true },
   submitResults: { fn: aSubmit, write: true },
