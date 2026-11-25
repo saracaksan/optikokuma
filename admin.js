@@ -476,3 +476,12 @@ function aiTab(pane) {
 }
   load(false);
 }
+Bu Dosyada Eklenenler
+Çoklu API Anahtarı Desteği (textarea): Her sağlayıcı kartında (Google Gemini, OpenRouter, Groq, Mistral, Claude, OpenAI, Özel) alt alta veya virgülle birden çok API anahtarı girebilirsin; kaç anahtar kayıtlı olduğu rozette gösterilir.
+
+Döngüsel Yedekleme & Hata Günlüğü Tablosu (renderTriedLog): Dene & Yedekleri Göster düğmesine basıldığında veya kota/hata durumunda hangi sağlayıcının hangi anahtarının neden atlandığı (hata kodu + Türkçe açıklama) tablo halinde listelenir ve sıradaki anahtara/sağlayıcıya geçiş gösterilir.
+
+Tüm Bölge / Okul / Sınıf / Öğrenci / WhatsApp / Başvuru Sekmeleri Korundu: Mevcut tüm yönetim sekmeleri ve okul geçiş özellikleri bozulmadan yerinde durur.   
+admin.js
+
+Güncellemek istediğin başka bir dosya veya ek bir ayar varsa haber vermen yeterli.
