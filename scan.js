@@ -11,6 +11,17 @@ async function studentsOf(code) {
   return SC.stu[code];
 }
 const stuOf = code => SC.stu[String(code || '')] || { list: [], map: {} };
+/** Tam numara eşleştirici: 106 gibi numaraların 6 ile çakışmasını önler; önce tam metin eşleşmesine, yoksa sıfırsız tam sayıya bakar. */
+function findStudentExact(stMap, list, rawNo) {
+  const s = String(rawNo || '').trim();
+  if (!s || /\?/.test(s)) return null;
+  if (Array.isArray(list)) {
+    const exact = list.find(x => String(x.ogrNo || '').trim() === s);
+    if (exact) return exact;
+  }
+  return (stMap && stMap[normNo(s)]) || null;
+}
+
 /** Okul kodunun formda basılan (sd haneli, soldan 0'la doldurulmuş) hâli */
 const schoolKey = (s, sd) => String(s.okulKodu).padStart(sd, '0').slice(-sd);
 /** Seçili okul: otomatik modda kaydın okulu, aksi hâlde seçilen okul */
@@ -154,7 +165,7 @@ function evaluate(rec, ctx) {
     if (fit.trackMismatch) hard.push(`Yan çizgi sayısı şablondakinden farklı (${(fit.tracks || []).join('/')} ≠ ${(fit.expectTracks || []).join('/')}); formun kenarı kesik ya da eksik görünüyor olabilir`);
     else if (ctx.frameKind === 'track' ? fit.score < 0.9 : ctx.frameKind === 'sides' && fit.score < 0.7) hard.push(`Şablonla örtüşme düşük (%${Math.round(fit.score * 100)}): satırlar kaymış olabilir, incelemede baloncuk dairelerini kontrol edin`);
   }
-  const school = recSchool(rec), st = stuOf(school), stu = school ? st.map[normNo(rec.studentNo)] : null, coded = codedName(rec);
+  const school = recSchool(rec), st = stuOf(school), stu = school ? findStudentExact(st.map, st.list, rec.studentNo) : null, coded = codedName(rec);
   if (ctx.hasName && coded) {   // formda ad-soyad kodlu: öğrenci listesindekiyle karşılaştır (numara yanlış okunduysa burada yakalanır)
     if (/\?/.test(rec.ocrName + rec.ocrSurname)) reasons.push('Formdaki ad/soyad tam okunamadı (çift işaret ya da silik)');
     else if (stu && !nameMatches(rec, stu)) reasons.push(`Formdaki ad-soyad (${coded}) listedeki öğrenciyle (${stu.ad} ${stu.soyad}) uyuşmuyor; numara yanlış işaretlenmiş olabilir`);
@@ -301,7 +312,7 @@ App.views.scan = function (root) {
       tpl: SC.tplInfo.tpl, cfg: examCfg(ex), examName: ex.name,
       process: async (blob, img) => readOne(new File([blob], `kamera-${stamp()}.jpg`, { type: 'image/jpeg' }), img),
       commit: async r => { const x = await commit(r); evalAll(); renderList(); return x; },
-      who: r => { const sc = recSchool(r), st = stuOf(sc).map[normNo(r.studentNo)], sch = sc ? schoolByCode(sc) : null; return { name: st ? `${st.ad} ${st.soyad}` : '', school: sch ? sch.okulAdi : '' }; },
+      who: r => { const sc = recSchool(r), so = stuOf(sc), st = findStudentExact(so.map, so.list, r.studentNo), sch = sc ? schoolByCode(sc) : null; return { name: st ? `${st.ad} ${st.soyad} · ${st.sinif || ''}`.replace(/ · $/, '') : '', school: sch ? sch.okulAdi : '' }; },
       review: r => openReview(SC.forms.indexOf(r)),
       discard: r => { r.removed = true; evalAll(); renderList(); },
       onClose: () => { evalAll(); renderList(); if (SC.forms.some(r => r.status === 'saved') && Settings.get('autoSync', true) && App.state.online) App.syncQueue(); }
@@ -359,7 +370,7 @@ App.views.scan = function (root) {
           h('div', { class: 'row' }, SC.tplInfo.tpl.frameKind ? null : h('button', { class: 'btn sm', onclick: () => manualCorners(r) }, 'Köşeleri elle işaretle'), SC.tplInfo.custom ? h('button', { class: 'btn sm', onclick: () => reread(r, { rot: 1 }) }, '↻ Yön') : null, h('button', { class: 'btn sm ghost', onclick: () => { r.removed = true; renderList(); } }, '✕'))));
         return;
       }
-      const rsc = recSchool(r), stu = stuOf(rsc).map[normNo(r.studentNo)], rsch = rsc && SC.okulKodu === SCHOOL_AUTO ? schoolByCode(rsc) : null, sc = cfg.keys && Object.keys(cfg.keys).length ? Scoring.scoreStudent(cfg, r.booklet, r.answers) : null;
+      const rsc = recSchool(r), rso = stuOf(rsc), stu = findStudentExact(rso.map, rso.list, r.studentNo), rsch = rsc && SC.okulKodu === SCHOOL_AUTO ? schoolByCode(rsc) : null, sc = cfg.keys && Object.keys(cfg.keys).length ? Scoring.scoreStudent(cfg, r.booklet, r.answers) : null;
       wrap.append(h('div', { class: 'formcard ' + (r.status === 'check' ? 'check' : r.status === 'saved' ? 'saved' : '') },
         h('span', { title: r.status }, r.status === 'ok' ? '✓' : r.status === 'saved' ? '⬆' : '⚠'),
         h('div', null, h('div', null, h('span', { class: 'no' }, r.studentNo || '—'), ' ', h('span', null, stu ? `${stu.ad} ${stu.soyad}` : (codedName(r) ? h('span', { class: 'muted', title: 'Formdaki ad-soyad (öğrenci listede yok)' }, trCase(codedName(r)) + ' (formdan)') : '')), ' ', r.booklet ? h('span', { class: 'pill' }, 'Kit. ' + r.booklet) : null, rsch ? h('span', { class: 'pill' }, rsch.okulAdi) : null),
@@ -385,8 +396,10 @@ App.views.scan = function (root) {
     const ex = examById(SC.examId), cfg = examCfg(ex), school = recSchool(r), sch = schoolByCode(school);
     if (!school) throw new Error('Okul belirlenemedi. İncele ekranından okulu seçin.');
     if (r.answers.length !== cfg.total) throw new Error(`Cevap sayısı (${r.answers.length}) sınavdaki soru sayısıyla (${cfg.total}) uyuşmuyor. Şablonu kontrol edin.`);
-    const no = normNo(r.studentNo); if (!/^\d+$/.test(no)) throw new Error('Geçerli bir öğrenci numarası girin.');
-    const stu = stuOf(school).map[no];
+    const rawNoStr = String(r.studentNo || '').trim();
+    if (!/^\d+$/.test(rawNoStr)) throw new Error('Geçerli bir öğrenci numarası girin.');
+    const soCommit = stuOf(school), stu = findStudentExact(soCommit.map, soCommit.list, rawNoStr);
+    const no = stu ? normNo(stu.ogrNo) : normNo(rawNoStr);
     const bk = r.booklet || (Object.keys(cfg.keys).length === 1 ? Object.keys(cfg.keys)[0] : '');
     const res = await Queue.add({ examId: ex.examId, examName: ex.name, okulKodu: String(school), okulAdi: sch ? sch.okulAdi : '', ogrNo: no, ad: stu ? `${stu.ad} ${stu.soyad}` : '', booklet: bk, answers: r.answers, flags: r.flags.slice(0, 40).map(f => ({ q: f.q, t: f.type })), scannedAt: new Date().toISOString() });
     r.status = 'saved'; return res;
@@ -458,25 +471,114 @@ App.views.scan = function (root) {
     }
     function paintFields() {
       const r = cur(); clear(fields);
-      const stOf = () => stuOf(recSchool(r)), nameOf = () => { const st = stOf().map[normNo(r.studentNo)]; return st ? `${st.ad} ${st.soyad} · ${st.sinif || ''}` : (recSchool(r) && stOf().list.length ? 'Listede yok' : ''); };
-      const paintNm = () => { const t = nameOf(); nm.textContent = t; nm.style.color = t === 'Listede yok' ? 'var(--bad)' : ''; };
+      const stOf = () => stuOf(recSchool(r));
+      const matchedStu = () => findStudentExact(stOf().map, stOf().list, r.studentNo);
+      const nameOf = () => { const st = matchedStu(); return st ? `${st.ad} ${st.soyad} · ${st.sinif || 'Sınıf yok'}` : (recSchool(r) && stOf().list.length ? 'Listede yok' : ''); };
+      const paintNm = () => { const t = nameOf(); nm.textContent = t; nm.style.color = t === 'Listede yok' ? 'var(--bad)' : 'var(--ok)'; };
       const nin = (k, label) => h('div', { class: 'field' }, h('label', null, label), h('input', { type: 'text', maxlength: 40, value: r[k] || '', 'data-f': k, onchange: e => { r[k] = e.target.value.toLocaleUpperCase('tr').replace(/[^A-ZÇĞİÖŞÜ ?]/g, ''); evalAll(); paintFields(); renderList(); } }));
-      const no = h('input', { type: 'text', inputmode: 'numeric', value: r.studentNo, class: 'mono', oninput: e => { r.studentNo = e.target.value.replace(/[^0-9?]/g, ''); r.noBad = /\?/.test(r.studentNo) || !r.studentNo ? 'Öğrenci no okunamadı' : ''; paintNm(); } });
-      const nm = h('div', { class: 'small' });
+      const no = h('input', { type: 'text', inputmode: 'numeric', value: r.studentNo, class: 'mono', placeholder: 'Okul No', oninput: e => { r.studentNo = e.target.value.replace(/[^0-9?]/g, ''); r.noBad = /\?/.test(r.studentNo) || !r.studentNo ? 'Öğrenci no okunamadı' : ''; paintNm(); drawManualBox(); } });
+      const nm = h('div', { class: 'small', style: { fontWeight: '600', marginTop: '.2rem' } });
       const bks = ex.config.booklets || Object.keys(cfg.keys);
       const bk = h('select', { value: r.booklet, onchange: e => { r.booklet = e.target.value; r.bkConflict = false; paintSummary(); } }, h('option', { value: '' }, '— seçilmedi —'), bks.map(b => h('option', { value: b }, b)));
       const cols = [h('div', { class: 'field' }, h('label', null, 'Öğrenci no'), no, nm), h('div', { class: 'field' }, h('label', null, 'Kitapçık'), bk)];
-      if (tpl.schoolDigits) {
+
+      // Okul listesinden hızlı öğrenci seçimi (numara okunmadıysa veya silikse tek tıkla atama)
+      const listNow = stOf().list || [];
+      if (listNow.length) {
+        const sortedList = listNow.slice().sort((a, b) => String(a.sinif || '').localeCompare(String(b.sinif || ''), 'tr', { numeric: true }) || String(a.ogrNo).localeCompare(String(b.ogrNo), undefined, { numeric: true }));
+        const stuPick = h('select', {
+          onchange: e => {
+            if (!e.target.value) return;
+            r.studentNo = String(e.target.value);
+            r.noBad = '';
+            no.value = r.studentNo;
+            evalAll();
+            paintFields();
+            renderList();
+          }
+        },
+          h('option', { value: '' }, `Listeden öğrenci seç (${sortedList.length} kayıt)…`),
+          sortedList.map(s => h('option', { value: String(s.ogrNo) }, `${s.ogrNo} · ${s.ad} ${s.soyad}${s.sinif ? ' (' + s.sinif + ')' : ''}`))
+        );
+        if (matchedStu()) stuPick.value = String(matchedStu().ogrNo);
+        cols.push(h('div', { class: 'field', style: { gridColumn: '1/-1' } }, h('label', null, 'Kayıtlı listeden seç'), stuPick));
+      }
+
+      if (tpl.schoolDigits || SC.okulKodu === SCHOOL_AUTO) {
         const sel = h('select', { onchange: async e => { r.okul = e.target.value; r.okulManual = true; await studentsOf(r.okul); evalAll(); paintFields(); renderList(); } }, h('option', { value: '' }, '— okul seçin —'), SC.auth.map(x => h('option', { value: String(x.okulKodu) }, schoolLabel(x))));
         sel.value = recSchool(r) || '';
         if (SC.okulKodu === SCHOOL_AUTO) cols.push(h('div', { class: 'field', style: { gridColumn: '1/-1' } }, h('label', null, 'Okul' + (r.sch ? ` · formdaki kurum kodu: ${r.sch}` : '')), sel));
       }
       if (tpl.nameLen || tpl.surnameLen) cols.push(nin('ocrName', 'Ad (formdan okundu)'), nin('ocrSurname', 'Soyad (formdan okundu)'));
       fields.append(h('div', { class: 'grid' }, cols)); paintNm();
-      const sc0 = recSchool(r), no0 = normNo(r.studentNo);
-      if (canEditStudents() && sc0 && SC.stu[sc0] && !SC.stu[sc0].map[no0] && /^\d{1,12}$/.test(no0) && r.ocrName && !/\?/.test(r.ocrName + r.ocrSurname))
-        fields.append(h('div', { class: 'row', style: { marginTop: '.4rem' } }, h('button', { class: 'btn sm', id: 'sc-addstu', onclick: async ev => { ev.currentTarget.disabled = true; await addStudents([{ r, sc: sc0, no: no0 }], true); paintFields(); } }, `${trCase(codedName(r))} adlı öğrenciyi listeye ekle`)));
-      if (r.reasons.length) fields.append(h('div', { class: 'alert warn' }, r.reasons.join(' · ')));
+
+      // Listede olmayan öğrenciyi (numara + ad + soyad + sınıf) okuma ekranından çıkmadan anında sisteme kaydetme kutusu
+      const manualBox = h('div');
+      function drawManualBox() {
+        clear(manualBox);
+        const sc0 = recSchool(r);
+        if (!sc0 || matchedStu()) return;
+        const mNo = h('input', { type: 'text', inputmode: 'numeric', class: 'mono', placeholder: 'Okul No', value: String(r.studentNo || '').replace(/\?/g, '') });
+        const mAd = h('input', { type: 'text', placeholder: 'Adı', value: r.ocrName && !/\?/.test(r.ocrName) ? trCase(r.ocrName) : '' });
+        const mSoy = h('input', { type: 'text', placeholder: 'Soyadı', value: r.ocrSurname && !/\?/.test(r.ocrSurname) ? trCase(r.ocrSurname) : '' });
+        const mSinif = h('input', { type: 'text', placeholder: 'Sınıf (ör. 8-A)', value: '' });
+        const btnSaveStu = h('button', {
+          type: 'button',
+          class: 'btn sm primary',
+          onclick: async () => {
+            const cleanNo = mNo.value.trim();
+            if (!/^\d{1,12}$/.test(cleanNo)) return toast('Geçerli bir okul numarası girin.', 'bad');
+            if (!mAd.value.trim()) return toast('Öğrenci adını yazın.', 'bad');
+            btnSaveStu.disabled = true;
+            try {
+              if (canEditStudents()) {
+                await api('saveStudent', {
+                  okulKodu: String(sc0),
+                  ogrNo: cleanNo,
+                  ad: mAd.value.trim(),
+                  soyad: mSoy.value.trim(),
+                  sinif: mSinif.value.trim(),
+                  yeni: true
+                });
+                delete SC.stu[sc0];
+                await studentsOf(sc0);
+                toast(`${cleanNo} · ${mAd.value.trim()} ${mSoy.value.trim()} okul listesine kaydedildi.`, 'ok');
+              } else {
+                // Öğretmen hesabında yerel oturum listesine ekle
+                SC.stu[sc0] = SC.stu[sc0] || { list: [], map: {} };
+                const localRec = { ogrNo: cleanNo, ad: mAd.value.trim(), soyad: mSoy.value.trim(), sinif: mSinif.value.trim() };
+                SC.stu[sc0].list.push(localRec);
+                SC.stu[sc0].map[normNo(cleanNo)] = localRec;
+                toast(`${cleanNo} · ${mAd.value.trim()} bu okutma oturumuna eklendi.`, 'ok');
+              }
+              r.studentNo = cleanNo;
+              r.noBad = '';
+              evalAll();
+              paintFields();
+              renderList();
+            } catch (e) {
+              toast(e.message || 'Öğrenci kaydedilemedi', 'bad');
+              btnSaveStu.disabled = false;
+            }
+          }
+        }, '+ Öğrenciyi Kaydet ve Forma Bağla');
+
+        manualBox.append(
+          h('div', { class: 'card', style: { marginTop: '.55rem', padding: '.65rem', background: 'var(--bg-soft, #f8fafc)' } },
+            h('div', { class: 'small', style: { fontWeight: '700', marginBottom: '.4rem' } }, 'Listede Olmayan Öğrenciyi Anında Ekle'),
+            h('div', { class: 'grid' },
+              h('div', { class: 'field' }, h('label', null, 'Okul No'), mNo),
+              h('div', { class: 'field' }, h('label', null, 'Sınıf'), mSinif),
+              h('div', { class: 'field' }, h('label', null, 'Ad'), mAd),
+              h('div', { class: 'field' }, h('label', null, 'Soyad'), mSoy)
+            ),
+            h('div', { class: 'row', style: { marginTop: '.45rem' } }, btnSaveStu)
+          )
+        );
+      }
+      drawManualBox();
+      fields.append(manualBox);
+      if (r.reasons.length) fields.append(h('div', { class: 'alert warn', style: { marginTop: '.5rem' } }, r.reasons.join(' · ')));
     }
     function paintAll() {
       const r = cur(); if (!r) return dlg.close();
