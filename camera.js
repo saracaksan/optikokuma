@@ -32,7 +32,7 @@ const Camera = (function () {
     const tpl = ctx.tpl, cfg = ctx.cfg, ASP = aspectsOf(tpl), QL = labelsOf(tpl);
     const S = {
       stream: null, track: null, timer: 0, closed: false, phase: 'search', armed: true, lost: 0, hist: [], sheetFor: null,
-      auto: Settings.get('camAutoSave', true), facing: 'environment', torch: false, torchOK: false, n: 0, saved: 0, recs: [], ri: 0, ms: 0
+      auto: Settings.get('camAutoSave', false), facing: 'environment', torch: false, torchOK: false, n: 0, saved: 0, recs: [], ri: 0, ms: 0
     };
 
     /* ---------------------------------------------------------------- arayüz */
@@ -54,7 +54,7 @@ const Camera = (function () {
       video, ov,
       h('div', { class: 'cam-top' }, btnClose, h('div', { class: 'cam-title' }, ctx.examName || 'Canlı okuma'), btnTorch, btnFlip),
       h('div', { class: 'cam-mid' }, hint, sub, bar),
-      h('div', { class: 'cam-bottom' }, h('label', { class: 'cam-auto' }, chkAuto, ' Sorunsuz formları otomatik kuyruğa ekle'), btnShot, stat),
+      h('div', { class: 'cam-bottom' }, h('label', { class: 'cam-auto' }, chkAuto, ' Otomatik kaydet (kapalıysa numara & şıkları görüp onaylarsınız)'), btnShot, stat),
       flash, sheet);
     document.body.append(root); document.body.classList.add('cam-open');
 
@@ -276,8 +276,16 @@ const Camera = (function () {
           h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => { S.armed = true; hideSheet(); } }, 'Tekrar dene'), h('button', { class: 'btn', onclick: () => close() }, 'Kapat'))));
         sheet.classList.remove('hidden'); setHint('Okunamadı', 'bad', '✕', msg); return;
       }
-      // sorunsuzları otomatik kaydet
-      if (S.auto) for (const r of good) if (r.status === 'ok') { try { await ctx.commit(r); S.saved++; r.camSaved = true; } catch (e) { r.camErr = e.message; } }
+      // Numara eksik/şüpheli ise ("?" içeriyorsa) otomatik kaydetme; öğretmenin görüp onaylamasını bekle
+      if (S.auto) {
+        for (const r of good) {
+          const cleanNo = String(r.studentNo || '').trim();
+          const validNo = /^\d+$/.test(cleanNo) && !cleanNo.includes('?');
+          if (r.status === 'ok' && validNo) {
+            try { await ctx.commit(r); S.saved++; r.camSaved = true; } catch (e) { r.camErr = e.message; }
+          }
+        }
+      }
       paintStat(); renderSheet();
     }
 
@@ -285,39 +293,98 @@ const Camera = (function () {
       const r = S.recs.filter(x => !x.error)[S.ri] || null; if (!r) return;
       const good = S.recs.filter(x => !x.error), sc = scoreOf(r), who = ctx.who ? ctx.who(r) : { name: '', school: '' };
       const st = r.camSaved || r.status === 'saved' ? 'saved' : r.status;
-      S.phase = 'result'; S.armed = false; S.sheetFor = { autoHide: st === 'saved' };
-      const head = st === 'saved' ? h('div', { class: 'cam-res-h ok' }, h('b', null, '✓ Okundu ve kuyruğa eklendi'))
-        : st === 'ok' ? h('div', { class: 'cam-res-h ok' }, h('b', null, '✓ Hatasız okundu'))
-          : h('div', { class: 'cam-res-h warn' }, h('b', null, '⚠ Kontrol gerekli'));
+      S.phase = 'result'; S.armed = false; S.sheetFor = { autoHide: S.auto && st === 'saved' };
+      const head = st === 'saved' ? h('div', { class: 'cam-res-h ok' }, h('b', null, '✓ Onaylandı ve kuyruğa eklendi'))
+        : st === 'ok' ? h('div', { class: 'cam-res-h ok' }, h('b', null, '✓ Okundu — Kontrol & Onay Bekliyor'))
+          : h('div', { class: 'cam-res-h warn' }, h('b', null, '⚠ Kontrol ve Onay Gerekli'));
       const cv = h('canvas', { class: 'cam-form' }), strip = h('div', { class: 'cam-strip' });
       const secs = sc && sc.sections.length > 1 ? h('div', { class: 'cam-secs' }, sc.sections.map(x => h('span', { class: 'chip' }, `${x.name} ${x.D}D ${x.Y}Y ${x.B}B`))) : null;
-      // soru soru liste
+
+      // Canlı önizlemede öğrenci numarası kutusu (sallama yapmadan okunanı gösterir; öğretmen anında düzeltebilir)
+      const choiceLabels = 'ABCDEFGH'.slice(0, cfg.choices || 4).split('');
+      const noInput = h('input', {
+        type: 'text',
+        inputmode: 'numeric',
+        class: 'mono',
+        value: r.studentNo || '',
+        placeholder: 'Okul No',
+        style: { width: '6.5rem', padding: '.25rem .45rem', fontWeight: '700', fontSize: '1rem' },
+        onchange: e => {
+          r.studentNo = e.target.value.replace(/\D/g, '');
+          renderSheet();
+        }
+      });
+
+      // Tıklanabilir soru-şık kutucukları (dokununca şık değişir veya silinir)
       let last = -2; const nq = cfg.total, items = [];
       for (let q = 1; q <= nq; q++) {
         const L = QL[q] || { n: q, sec: '', sid: -1 }, v = verdict(r, q), a = r.answers.charAt(q - 1) || '-';
         if (L.sec && L.sid !== last) items.push(h('div', { class: 'cam-seg' }, L.sec)); last = L.sid;
-        items.push(h('span', { class: 'qc ' + v, title: `${L.sec ? L.sec + ' ' : ''}${L.n}. soru` }, h('small', null, L.n), h('b', null, a === '-' ? '·' : a)));
+        items.push(h('button', {
+          type: 'button',
+          class: 'qc ' + v,
+          style: { cursor: 'pointer', border: '1px solid rgba(0,0,0,.12)' },
+          title: `${L.sec ? L.sec + ' ' : ''}${L.n}. soru (dokunarak şıkkı değiştir veya temizle)`,
+          onclick: () => {
+            if (st === 'saved') return;
+            const cycle = ['-', ...choiceLabels];
+            const curCh = a === '*' ? '-' : a;
+            const nxt = cycle[(cycle.indexOf(curCh) + 1) % cycle.length];
+            const arr = r.answers.split('');
+            arr[q - 1] = nxt;
+            r.answers = arr.join('');
+            r.edits = r.edits || {};
+            r.edits[q] = true;
+            renderSheet();
+          }
+        }, h('small', null, L.n), h('b', null, a === '-' ? '·' : a)));
       }
       strip.append(...items);
+
       const multi = good.length > 1 ? h('div', { class: 'cam-multi' }, good.map((x, i) => h('button', { class: 'btn sm' + (i === S.ri ? ' primary' : ''), onclick: () => { S.ri = i; renderSheet(); } }, `Form ${i + 1}${x.studentNo ? ' · ' + x.studentNo : ''}`))) : null;
       const acts = [];
-      if (st !== 'saved') acts.push(h('button', { class: 'btn primary', onclick: async () => { try { await ctx.commit(r); r.camSaved = true; S.saved++; paintStat(); renderSheet(); } catch (e) { toast(e.message, 'bad'); } } }, 'Kuyruğa ekle'));
+      if (st !== 'saved') {
+        acts.push(h('button', { class: 'btn primary', onclick: async () => {
+          try {
+            await ctx.commit(r);
+            r.camSaved = true;
+            S.saved++;
+            paintStat();
+            toast('Onaylandı ve kuyruğa eklendi', 'ok');
+            S.armed = true;
+            hideSheet();
+          } catch (e) { toast(e.message, 'bad'); }
+        } }, '✓ Onayla ve Kuyruğa Ekle'));
+      }
       acts.push(h('button', { class: 'btn', onclick: () => { S.armed = true; hideSheet(); } }, st === 'saved' ? 'Sonraki form' : 'Yeniden çek'));
-      if (st !== 'saved') acts.push(h('button', { class: 'btn', onclick: () => { close(); ctx.review && ctx.review(r); } }, 'Düzelt / incele'));
-      if (st !== 'saved' && ctx.discard) acts.push(h('button', { class: 'btn ghost', onclick: () => { ctx.discard(r); S.recs = S.recs.filter(x => x !== r); if (S.recs.some(x => !x.error)) { S.ri = 0; renderSheet(); } else { S.armed = true; hideSheet(); } } }, 'At'));
+      if (st !== 'saved') acts.push(h('button', { class: 'btn', onclick: () => { close(); ctx.review && ctx.review(r); } }, 'Detaylı İncele / Öğrenci Ekle'));
+      if (st !== 'saved' && ctx.discard) {
+        acts.push(h('button', { class: 'btn danger', onclick: () => {
+          ctx.discard(r);
+          S.recs = S.recs.filter(x => x !== r);
+          if (S.recs.some(x => !x.error)) { S.ri = 0; renderSheet(); }
+          else { S.armed = true; hideSheet(); }
+        } }, '✕ Sil / At'));
+      }
+
       clear(sheet).append(h('div', { class: 'cam-card ' + (st === 'saved' || st === 'ok' ? 'ok' : 'warn') }, head, multi,
-        h('div', { class: 'cam-who' }, h('span', { class: 'no mono' }, r.studentNo || '—'), ' ', h('span', null, who.name || ''), r.booklet ? h('span', { class: 'pill' }, 'Kit. ' + r.booklet) : null, who.school ? h('span', { class: 'pill' }, who.school) : null),
+        h('div', { class: 'cam-who' },
+          h('span', { class: 'small muted' }, 'No: '), noInput, ' ',
+          h('b', null, who.name || 'Listede kayıtlı değil'),
+          r.booklet ? h('span', { class: 'pill' }, 'Kit. ' + r.booklet) : null,
+          who.school ? h('span', { class: 'pill' }, who.school) : null
+        ),
         sc ? h('div', { class: 'cam-score' }, h('span', { class: 'd' }, h('b', null, sc.D), ' doğru'), h('span', { class: 'y' }, h('b', null, sc.Y), ' yanlış'), h('span', { class: 'b' }, h('b', null, sc.B), ' boş'), h('span', { class: 'n' }, 'net ', h('b', null, nf(sc.net))))
           : h('div', { class: 'small muted' }, 'Bu sınav için cevap anahtarı girilmediği için doğru/yanlış hesaplanamadı; okunan işaretler gösteriliyor.'),
         secs, r.reasons && r.reasons.length ? h('div', { class: 'alert warn small' }, r.reasons.join(' · ')) : null,
         r.camErr ? h('div', { class: 'alert bad small' }, r.camErr) : null,
         h('div', { class: 'cam-legend small' }, h('span', { class: 'lg d' }, 'doğru'), h('span', { class: 'lg y' }, 'yanlış'), h('span', { class: 'lg k' }, 'doğru cevap'), h('span', { class: 'lg m' }, 'çoklu işaret')),
         r.blob ? h('div', { class: 'cam-formwrap' }, cv) : null,
-        h('details', { class: 'cam-det' }, h('summary', null, 'Soru soru sonuçlar'), strip),
+        h('details', { class: 'cam-det', open: true }, h('summary', null, 'Okunan Şıklar (dokunarak değiştir / sil)'), strip),
         h('div', { class: 'row cam-acts' }, acts)));
       sheet.classList.remove('hidden');
       const kind = st === 'saved' || st === 'ok' ? 'ok' : 'warn';
-      setHint(st === 'saved' ? 'Okundu ✓' : st === 'ok' ? 'Okundu ✓' : 'Kontrol gerekli', kind, kind === 'ok' ? '✓' : '⚠', sc ? `${sc.D} doğru · ${sc.Y} yanlış · ${sc.B} boş · net ${nf(sc.net)}` : '');
+      setHint(st === 'saved' ? 'Onaylandı ✓' : st === 'ok' ? 'Onay bekliyor' : 'Kontrol gerekli', kind, kind === 'ok' ? '✓' : '⚠', sc ? `${sc.D} doğru · ${sc.Y} yanlış · ${sc.B} boş · net ${nf(sc.net)}` : '');
       if (r.blob) {
         const url = URL.createObjectURL(r.blob), im = new Image();
         im.onload = () => { paintForm(cv, im, r); URL.revokeObjectURL(url); }; im.src = url;
