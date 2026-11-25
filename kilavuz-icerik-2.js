@@ -525,21 +525,40 @@ Guide.add([
     ]
   },
   {
-    id: 'wa-mesaj', cat: 'iletisim', title: 'Velilere WhatsApp ile sonuç mesajı', aud: 'okul', kw: 'whatsapp veli mesaj şablon gönder toplu kişiye özel yer tutucu eklenti gönderildi atlananlar',
-    sum: 'Her öğrenciye kişiye özel sonuç mesajı hazırlayın; elle ya da eklentiyle gönderin.',
-    go: { view: 'admin', tab: 'wa', label: 'Veli WhatsApp sekmesini aç' }, see: ['veli-kod-uret', 'veli-sorgu', 'sinav-yeni'],
+    id: 'wa-mesaj', cat: 'iletisim', title: 'Velilere WhatsApp ile sonuç mesajı ve arka plan eklentisi', aud: 'okul', kw: 'whatsapp business normal veli mesaj şablon gönder toplu kişiye özel yer tutucu eklenti chrome edge firefox arka plan gönderildi atlananlar',
+    sum: 'Chrome, Edge ve Firefox eklentisiyle WhatsApp Normal ve Business üzerinden arka planda toplu veya tekil mesaj gönderin.',
+    go: { view: 'admin', tab: 'wa', label: 'Veli WhatsApp sekmesini aç' }, see: ['veli-kod-uret', 'veli-gmail', 'hata-kodlari', 'sinav-yeni'],
     body: [
-      ['p', 'Sınav sonuçlandıktan sonra {{Yönetim → Veli WhatsApp}} sekmesi her öğrencinin sonucunu **anne ve/veya babasının telefonuna kişiye özel mesaj** olarak hazırlar: puan, net, doğru/yanlış/boş, ders ders netler, sınıf ve okul sırası ve velinin nasıl giriş yapacağı (okul, sınıf, numara, veli kodu).'],
-      ['steps', [
-        ['Önce veli telefonlarını kaydedin', '((veli-kod-uret|Veli telefonları))'],
-        ['Sınavın [[öğrenci/veli sorgulamasına açık]] olduğundan emin olun', 'Kapalıysa uyarı çıkar: veli giriş yapsa da sonucu göremez. Sınavı düzenleyip seçeneği açın.'],
-        ['Okul, sınav, (isteğe bağlı) sınıf ve alıcıyı seçin', 'Alıcı: anne ve baba / yalnız anne / yalnız baba.'],
-        ['[[Mesajları hazırla]]’ya basın', 'Telefonu olan ve bu sınavda sonucu olan öğrenciler listelenir; telefonu olmayanlar ve sonucu olmayanlar **Atlananlar**’da nedeniyle yazar. Aynı numara iki kez yazıldıysa tek mesaj gider.'],
-        ['Gerekirse mesaj şablonunu düzenleyin', 'Yer tutucuya ({adsoyad}, {net}, {siraSinif}, {dersler}, {kod}…) tıklayınca imlecin olduğu yere eklenir; değeri boş olan yer tutucunun satırı mesajdan çıkar. Canlı önizleme vardır; şablon bu cihazda saklanır.'],
-        ['Gönderin', 'Satırdaki [[WhatsApp’ta aç]] mesajı hazır olarak açar, siz gönderirsiniz; ardından [[Gönderildi]] diye işaretleyin. Çok sayıda mesaj için [[Eklenti için kuyruğu kopyala]] ile WhatsApp Web eklentisine aktarabilirsiniz.']
+      ['p', '{{Yönetim → Veli WhatsApp}} sekmesi, her öğrencinin sonucunu ve **kişiye özel eylem planı bağlantısını** anne ve/veya babasının telefonuna hazırlar. Sistem tarayıcınızı (Chrome, Edge, Brave, Opera, Firefox) otomatik algılar ve kurulum adımlarını üst kartta gösterir.'],
+      ['h', '1. Tarayıcı eklentisini kurma (bir kez)'],
+      ['table', ['Tarayıcı', 'Kurulum adımları'], [
+        ['**Google Chrome / Edge / Brave / Opera**', '`wa-eklenti.zip` dosyasını klasöre çıkarın → adres çubuğuna `chrome://extensions` (Edge: `edge://extensions`) yazın → **Geliştirici modu**nu açın → **Paketlenmemiş öğe yükle** diyerek `wa-eklenti` klasörünü seçin.'],
+        ['**Mozilla Firefox**', '`wa-eklenti.zip` dosyasını klasöre çıkarın → adres çubuğuna `about:debugging#/runtime/this-firefox` yazın → **Geçici Eklenti Yükle** diyerek `wa-eklenti/manifest.json` dosyasını seçin.']
       ]],
-      ['tip', '**Veli kodu olmayan öğrencilere kod üret ve mesaja yaz** kutusu (önerilir) kod üretip mesaja ekler. Mesajdaki bağlantıya tıklayan veli sınıf ve numarası hazır gelen sayfada yalnızca kodunu yazar; geçmiş bütün sınavlarını görür.'],
-      ['warn', 'WhatsApp’ın kuralları gereği çok sayıda mesajı kısa sürede göndermeyin; eklenti her mesaj arasında bekler ve günde en çok 60 mesaj gönderir. Uzun mesajlar bağlantıda kesilebilir, şablonu kısa tutun.']
+      ['h', '2. Mesaj hazırlama ve arka planda gönderme'],
+      ['steps', [
+        ['WhatsApp Web oturumunu açın', 'Bilgisayarınızda `web.whatsapp.com` adresine girip telefonunuzdaki **WhatsApp (Normal)** veya **WhatsApp Business** uygulamasından QR kodu okutun.'],
+        ['Okul, sınav, sınıf, alıcı ve bekleme süresini seçin', 'İsterseniz tek öğrenci, birkaç öğrenci, seçili sınıf ya da tüm okulu (100–500+ öğrenci) seçebilirsiniz. Mesaj arası bekleme süresi olarak **10–15 saniye** önerilir.'],
+        ['[[Mesajları Hazırla]] düğmesine basın', 'Gönderime hazır öğrenciler listelenir; telefonu eksik veya sonucu olmayanlar **Atlanan / Gönderilemeyen Öğrenciler** tablosunda nedeniyle birlikte görünür (CSV indirilebilir).'],
+        ['Şablonu kontrol edip gönderimi başlatın', 'Tek tek göndermek için satırdaki [[WhatsApp’ta Aç]] düğmesini; arka planda otomatik göndermek için [[🚀 Eklentiyle Arka Planda Gönder / Kuyruğu Kopyala]] düğmesini kullanın.'],
+        ['Diğer işlerinize devam edin', 'Eklenti arka planda yeni bir WhatsApp Web sekmesi açar ve siz başka sekmelerde çalışırken mesajları sırayla gönderir. Gönderilen ve hata alan her kayıt canlı olarak **Eklenti Gönderim Raporu** tablosuna düşer ve sunucuya kaydedilir.']
+      ]],
+      ['tip', 'Eklenti simgesine tıklayarak açılan pencereden ilerlemeyi (`gönderilen / toplam`) izleyebilir, **Duraklat / Devam Et / Durdur** yapabilir ve gönderim raporunu CSV olarak indirebilirsiniz.'],
+      ['warn', 'WhatsApp hesabınızın kısıtlanmaması için çok kısa aralıklarla gönderim yapmayın. Oturum kapalıysa (`WA_LOGIN`) eklenti kuyruğu kendiliğinden duraklatır; QR kodu okuttuktan sonra **Devam Et**’e basın.']
+    ]
+  },
+  {
+    id: 'veli-gmail', cat: 'iletisim', title: 'Veli Portalı: Gmail / e-posta üyeliği ve Eylem Planı', aud: 'herkes', kw: 'veli gmail eposta üyelik giriş hızlı sorgu eylem planı kazanım telefon şifre',
+    sum: 'Veliler girişsiz sorgulama yapabilir veya Gmail/e-posta hesabıyla kalıcı üyelik oluşturup eylem planına ulaşabilir.',
+    see: ['veli-kod-uret', 'wa-mesaj', 'hata-kodlari'],
+    body: [
+      ['p', 'Veli & Öğrenci Portalı (`#/ogrenci`) üç farklı kullanım sunar:'],
+      ['ul', [
+        '**Hızlı Sonuç Sorgula (girişsiz):** İl → İlçe → Okul → Sınıf → Okul No (+ varsa Veli Kodu) ile anında sorgulama.',
+        '**Veli Üyeliği Oluştur (Gmail + Telefon):** Veli; çocuğunun okul, sınıf, okul numarası (ve varsa veli kodu) ile doğrulama yaptıktan sonra kendi **Gmail / e-posta adresi**, **cep telefonu** ve belirlediği parolayla kalıcı hesap açar.',
+        '**Veli Girişi (Gmail / E-posta):** Üye olan veli sonraki sınavlarda okul/sınıf seçmeden yalnızca e-posta ve parolasıyla tek tıkla giriş yapar.'
+      ]],
+      ['info', 'Sonuç ekranında her sınav için D/Y/B, net, puan, sınıf/okul/genel sıralama, ders ortalamaları ve öğrencinin yanlış/boş bıraktığı sorulara göre otomatik oluşturulmuş **Kişiye Özel Konu / Kazanım Eylem Planı** görüntülenir ve PDF olarak yazdırılabilir.']
     ]
   },
 
@@ -580,6 +599,32 @@ Guide.add([
   },
 
   /* ================================================================ 13. YARDIM */
+  {
+    id: 'hata-kodlari', cat: 'yardim', title: 'Hata kodları, nedenleri ve çözümleri', aud: 'herkes', kw: 'hata kodu wa_login wa_not_on_wa wa_invalid_phone wa_timeout wa_send_btn wa_rate_limit wa_tab_closed auth velikodu throttle noai aikey aimodel aiscope inuse çözüm',
+    sum: 'WhatsApp eklentisi ve sistem genelinde karşılaşabileceğiniz tüm hata kodlarının anlamı ve çözümü.',
+    see: ['wa-mesaj', 'sss', 'okut-sorun'],
+    body: [
+      ['h', 'WhatsApp Eklentisi Hata Kodları'],
+      ['table', ['Hata Kodu', 'Nedeni', 'Nasıl Çözülür?'], [
+        ['`WA_LOGIN`', 'WhatsApp Web oturumu açık değil veya QR kod ekranı çıktı.', '`web.whatsapp.com` sekmesini açın, telefonunuzdaki WhatsApp / WhatsApp Business ile QR kodu okutun ve eklentide **Devam Et**’e basın.'],
+        ['`WA_NOT_ON_WA`', 'Telefon numarası WhatsApp’ta kayıtlı değil veya numara yanlış yazılmış.', '{{Yönetim → Öğrenciler}} ekranından veli telefonunu kontrol edip düzeltin; sabit hat yerine cep telefonu (`05xx…`) girin.'],
+        ['`WA_INVALID_PHONE`', 'Telefon numarası biçimi geçersiz (eksik hane veya harf içeriyor).', 'Numarayı `0532 111 22 33` veya yurt dışı ise `+ülke kodu` biçiminde kaydedin.'],
+        ['`WA_TIMEOUT`', 'WhatsApp Web sohbet ekranı 25 saniye içinde yüklenmedi.', 'İnternet bağlantınızı kontrol edin; WhatsApp Web sekmesini bir kez yenileyip yalnızca hatalı kalanları tekrar gönderin.'],
+        ['`WA_SEND_BTN`', 'Mesaj kutusu açıldı ancak gönder düğmesi bulunamadı.', 'WhatsApp Web arayüzü geç yüklendiğinde olur; bekleme süresini 12–15 saniyeye çıkarıp hatalı satırı yeniden deneyin.'],
+        ['`WA_RATE_LIMIT`', 'Kısa sürede çok fazla mesaj gönderilmeye çalışıldı.', 'Mesaj arası bekleme süresini artırın (15+ sn) ve 10–15 dakika ara verdikten sonra devam edin.'],
+        ['`WA_TAB_CLOSED`', 'Arka plandaki WhatsApp Web sekmesi kapatıldı.', 'Gönderim bitmeden arka plandaki WhatsApp sekmesini kapatmayın; eklentiden kuyruğu yeniden başlatın.']
+      ]],
+      ['h', 'Sistem ve Sunucu Hata Kodları'],
+      ['table', ['Hata Kodu', 'Nedeni', 'Nasıl Çözülür?'], [
+        ['`AUTH`', 'Oturum süresi dolmuş veya geçersiz.', 'Çıkış yapıp kullanıcı adı ve parolanızla yeniden giriş yapın.'],
+        ['`VELIKODU`', 'Öğrenci için veli kodu tanımlı ancak girilmemiş veya hatalı.', 'Okulun verdiği 6 haneli veli kodunu doğru girin; bilmiyorsanız okul yöneticisinden isteyin.'],
+        ['`THROTTLE`', 'Kısa sürede çok fazla sorgu veya hatalı deneme yapıldı.', 'Güvenlik kilidi nedeniyle bir süre bekleyip doğru bilgilerle tekrar deneyin.'],
+        ['`NOAI` / `AIKEY` / `AIMODEL`', 'Yapay zekâ API anahtarı eksik, reddedildi veya model adı geçersiz.', '{{Yönetim → Yapay zekâ}} sekmesinden anahtarı kontrol edip **Dene** düğmesiyle doğrulayın.'],
+        ['`AISCOPE`', 'Apps Script dış bağlantı (`UrlFetchApp`) izni verilmemiş.', 'Apps Script düzenleyicisinde `izinleriVer` işlevini bir kez çalıştırıp izin verin ve yeni dağıtım sürümü alın.'],
+        ['`INUSE`', 'Silinmek istenen okula bağlı aktif kullanıcı hesapları var.', 'Önce {{Yönetim → Kullanıcılar}} sekmesinden o okula bağlı hesapları pasifleştirin, ardından okulu silin.']
+      ]]
+    ]
+  },
   {
     id: 'sss', cat: 'yardim', title: 'Sık sorulan sorular', aud: 'herkes', kw: 'sss sorun nasıl yapılır hata çözüm internet yok sıfırla unuttum görünmüyor menü yok',
     sum: 'En sık karşılaşılan durumlar ve kısa çözümleri.',

@@ -1,5 +1,6 @@
 /**
- * OPTİK OKUMA SİSTEMİ — Google Apps Script arka ucu (Sheets = veri tabanı)
+ * SIRAÇ AKSAN OPTİK OKUMA — Google Apps Script arka ucu (Sheets = veri tabanı)
+ * Telif Hakkı © Sıraç AKSAN — İzinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.
  *
  * Kurulum özeti (ayrıntı README.md'de):
  *  1) Yeni bir Google E-Tablo açın → Uzantılar → Apps Script.
@@ -16,7 +17,8 @@ var HEADERS = {
   Students: ['okulKodu', 'ogrNo', 'ad', 'soyad', 'sinif', 'veliKodu', 'anneTel', 'babaTel'],
   Exams: ['examId', 'name', 'date', 'owner', 'scopeType', 'scopeValue', 'status', 'config', 'createdAt', 'ownerRole'],
   Templates: ['templateId', 'name', 'owner', 'json'],
-  Gonderim: ['key', 'examId', 'okulKodu', 'ogrNo', 'kime', 'zaman', 'kullanici'],
+  Gonderim: ['key', 'examId', 'okulKodu', 'ogrNo', 'kime', 'zaman', 'kullanici', 'durum', 'hataKodu', 'hataMesaj'],
+  VeliHesap: ['email', 'telefon', 'okulKodu', 'ogrNo', 'salt', 'hash', 'ad', 'createdAt'],
   DisSinav: ['examId', 'name', 'date', 'kaynak', 'okulKodu', 'owner', 'ownerRole', 'config', 'createdAt'],
   DisSonuc: ['key', 'examId', 'ogrNo', 'ad', 'sinif', 'data', 'updatedAt'],
   Basvurular: ['id', 'tur', 'durum', 'username', 'name', 'il', 'ilce', 'okulKodu', 'okulAdi', 'duzey', 'mudur', 'telefon', 'eposta', 'adres', 'brans', 'salt', 'hash', 'createdAt', 'decidedBy', 'decidedAt', 'not']
@@ -28,7 +30,7 @@ var TEXT_FIELDS = ['username', 'okulKodu', 'ogrNo', 'sinif', 'salt', 'hash', 'ex
 var TEXT_COLS = {};
 Object.keys(HEADERS).forEach(function (n) { TEXT_COLS[n] = []; HEADERS[n].forEach(function (c, i) { if (TEXT_FIELDS.indexOf(c) >= 0) TEXT_COLS[n].push(i + 1); }); });
 var ROLES = ['admin', 'il', 'ilce', 'okul', 'ogretmen'];
-var SCHEMA_VERSION = '6-dis';
+var SCHEMA_VERSION = '7-veli-wa';
 var TOKEN_DAYS = 14;
 var PBKDF_ROUNDS = 300;
 var MEM_ = {};
@@ -43,7 +45,7 @@ var IL_LISTESI = ['Adana', 'Adıyaman', 'Afyonkarahisar', 'Ağrı', 'Aksaray', '
 /* ============================ MENÜ / KURULUM ============================ */
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('Optik Sistem')
+  SpreadsheetApp.getUi().createMenu('Sıraç Aksan Optik Okuma')
     .addItem('1) Kurulumu çalıştır', 'setup')
     .addItem('2) Yönetici oluştur', 'createAdminPrompt')
     .addItem('3) Demo veri yükle (isteğe bağlı)', 'seedDemo')
@@ -96,7 +98,7 @@ function howToDeploy() {
 
 /* ============================ HTTP GİRİŞ NOKTALARI ============================ */
 
-function doGet() { return json_({ ok: true, service: 'optik-sistem', time: new Date().toISOString() }); }
+function doGet() { return json_({ ok: true, service: 'sirac-aksan-optik-okuma', appName: 'Sıraç Aksan Optik Okuma', copyright: 'Telif Hakkı © Sıraç AKSAN — İzinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.', time: new Date().toISOString() }); }
 
 function doPost(e) {
   var out;
@@ -344,6 +346,10 @@ function examCovers_(ex, s) {
     case 'il': return s.il === ex.scopeValue;
     case 'ilce': return (s.il + '|' + s.ilce) === ex.scopeValue;
     case 'okul': return String(s.okulKodu) === String(ex.scopeValue);
+    case 'okullar': {
+      var list = String(ex.scopeValue || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      return list.indexOf(String(s.okulKodu)) >= 0;
+    }
   }
   return false;
 }
@@ -428,7 +434,13 @@ function aListExams(u) {
 
 function validScope_(u, scopeType, scopeValue) {
   if (u.role === 'admin') return true;
-  var sm = schoolMap_(), ok = false;
+  var sm = schoolMap_();
+  if (scopeType === 'okullar') {
+    var codes = String(scopeValue || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!codes.length) return false;
+    return codes.every(function (code) { return !!sm[code] && canSeeSchool_(u, sm[code]); });
+  }
+  var ok = false;
   for (var k in sm) { var s = sm[k]; if (canSeeSchool_(u, s) && examCovers_({ scopeType: scopeType, scopeValue: scopeValue }, s)) { ok = true; break; } }
   if (!ok) return false;
   // kapsam, kullanıcının yetki alanını aşmamalı
@@ -439,6 +451,21 @@ function validScope_(u, scopeType, scopeValue) {
 }
 
 /** Harici formla eşleme (sınav dersi → formdaki ders bloğu / başlangıç satırı). Yalnız PWA kullanır; sunucu temizleyip saklar. */
+/** Sınav kazanım listesini temizler: [{ ders, soru, kod, konu }]. En çok 300 soru. */
+function cleanKazanimlar_(list) {
+  if (!Array.isArray(list)) return undefined;
+  var out = [];
+  list.slice(0, 300).forEach(function (x, i) {
+    if (!x || typeof x !== 'object') return;
+    var konu = clean_(x.konu || x.kazanim || x.title, 220);
+    var ders = clean_(x.ders || x.section, 60);
+    var kod = clean_(x.kod || x.code, 40);
+    var soru = parseInt(x.soru || x.q || (i + 1), 10);
+    if (!konu && !kod) return;
+    out.push({ soru: isFinite(soru) && soru >= 1 && soru <= 300 ? soru : (i + 1), ders: ders, kod: kod, konu: konu });
+  });
+  return out.length ? out : undefined;
+}
 function formMap_(m) {
   if (!Array.isArray(m)) return undefined;
   var out = m.slice(0, 60).map(function (x) { x = x || {}; var l = parseInt(x.l, 10), s = parseInt(x.s, 10); return { l: isFinite(l) && l >= 0 && l < 200 ? l : -1, s: isFinite(s) && s > 0 && s < 5000 ? s : 0 }; });
@@ -454,6 +481,11 @@ function aSaveExam(u, p) {
   if (existing && isPersonal_(existing)) { scopeType = 'okul'; scopeValue = String(existing.scopeValue); }   // kişisel sınavın kapsamı sabit (yönetici düzenlese de)
   else if (u.role === 'okul' || u.role === 'ogretmen') { scopeType = 'okul'; scopeValue = String(u.okulKodu); }
   if (scopeType === 'genel') scopeValue = '';
+  if (scopeType === 'okullar') {
+    var seenSc = {}, uniqSc = [];
+    scopeValue.split(',').forEach(function (v) { v = normCode_(v); if (v && !seenSc[v]) { seenSc[v] = 1; uniqSc.push(v); } });
+    scopeValue = uniqSc.join(',');
+  }
   if (!(existing && isPersonal_(existing)) && !validScope_(u, scopeType, scopeValue)) throw fail_('Bu kapsamda sınav oluşturma yetkiniz yok.');
   if (!existing && u.role === 'ogretmen') {
     var mine = table_('Exams').filter(function (e) { return e.owner === u.username; }).length;
@@ -466,7 +498,7 @@ function aSaveExam(u, p) {
   if (status === 'open' && issues.length && !p.allowIssues) throw fail_('Cevap anahtarı sorunları: ' + issues.slice(0, 4).join(' | '));
   var stored = JSON.stringify({
     sections: cfg.sections, choices: cfg.choices, penalty: cfg.penalty, method: cfg.method, base: cfg.base, max: cfg.max, a: cfg.a, b: cfg.b,
-    keys: cfg.keys, multiIsWrong: cfg.multiIsWrong, stats: cfg.stats, templateId: str_(raw.templateId), formMap: formMap_(raw.formMap), booklets: raw.booklets || Object.keys(cfg.keys), showKeys: raw.showKeys !== false, veli: raw.veli === true
+    keys: cfg.keys, multiIsWrong: cfg.multiIsWrong, stats: cfg.stats, templateId: str_(raw.templateId), formMap: formMap_(raw.formMap), kazanimlar: cleanKazanimlar_(raw.kazanimlar), booklets: raw.booklets || Object.keys(cfg.keys), showKeys: raw.showKeys !== false, veli: raw.veli === true
   });
   if (existing) {
     existing.name = name; existing.date = str_(x.date); existing.scopeType = scopeType; existing.scopeValue = scopeValue; existing.status = status; existing.config = stored;
@@ -787,6 +819,63 @@ function studentMap_() {
   return m;
 }
 
+
+function finalizeCohortRealistic_(cfg, rows) {
+  var info = Scoring.finalizeCohort(cfg, rows);
+  if (!rows.length) return info;
+  var ns = cfg.sections.length, penalty = Math.max(0, Number(cfg.penalty) || 0), j;
+  var stats = [];
+  for (j = 0; j < ns; j++) {
+    var st = (info && info.stats && info.stats[j]) ? info.stats[j] : Scoring.meanSd(rows.map(function (r) { return r.secNets[j]; }));
+    var minSd = Math.max(1, cfg.sections[j].count * 0.18);
+    var sd = (st && st.sd > minSd) ? st.sd : minSd;
+    var mean = (st && isFinite(st.mean)) ? st.mean : (cfg.sections[j].count * 0.45);
+    stats.push({ mean: mean, sd: sd });
+  }
+  var aFull = 0, aMinTheo = 0;
+  for (j = 0; j < ns; j++) {
+    var cnt = cfg.sections[j].count, coef = cfg.sections[j].coef;
+    var sFull = 50 + 10 * ((cnt - stats[j].mean) / stats[j].sd);
+    var minNet = penalty > 0 ? (-cnt * penalty) : 0;
+    var sLow = 50 + 10 * ((minNet - stats[j].mean) / stats[j].sd);
+    aFull += coef * sFull;
+    aMinTheo += coef * sLow;
+  }
+  if (cfg.stats && cfg.stats.aMin != null && cfg.stats.aMax != null) {
+    aMinTheo = Number(cfg.stats.aMin);
+    aFull = Number(cfg.stats.aMax);
+  }
+  rows.forEach(function (r) {
+    var A = 0, allFull = true;
+    r.secStd = [];
+    for (j = 0; j < ns; j++) {
+      var net = Number(r.secNets[j]) || 0;
+      if (net < cfg.sections[j].count - 0.0001) allFull = false;
+      var z = (net - stats[j].mean) / stats[j].sd, S = 50 + 10 * z;
+      r.secStd.push(Math.round(S * 100) / 100);
+      A += cfg.sections[j].coef * S;
+    }
+    r.A = A;
+    var p;
+    if (cfg.method === 'coef500') {
+      if (allFull) p = cfg.max;
+      else {
+        var wSum = 0;
+        for (j = 0; j < ns; j++) wSum += cfg.sections[j].coef * (Number(r.secNets[j]) || 0);
+        p = Math.max(0, Math.min(cfg.max - 0.001, cfg.base + wSum));
+      }
+    } else if (cfg.method === 'std500') {
+      if (allFull) p = cfg.max;
+      else if (aFull > aMinTheo) p = Math.max(cfg.base, Math.min(cfg.max - 0.001, cfg.base + (cfg.max - cfg.base) * (A - aMinTheo) / (aFull - aMinTheo)));
+      else p = cfg.base;
+    } else {
+      return;
+    }
+    r.puan = Math.round(p * 1000) / 1000;
+  });
+  return { stats: stats, aMin: aMinTheo, aMax: aFull };
+}
+
 function computeExam_(ex) {
   var cfg = Scoring.normalizeCfg(JSON.parse(ex.config || '{}'));
   var sh = resultsSheet_(ex.examId, false), res = sh ? objs_(sh, RESULT_HEADERS) : [];
@@ -800,7 +889,7 @@ function computeExam_(ex) {
       secNets: sc.sections.map(function (x) { return x.net; }), registered: !!s, scannedAt: r.scannedAt
     };
   });
-  var info = Scoring.finalizeCohort(cfg, rows);
+  var info = finalizeCohortRealistic_(cfg, rows);
   Scoring.rankRows(rows, 'rGenel');
   Scoring.rankRows(rows, 'rIl', function (r) { return r.il; });
   Scoring.rankRows(rows, 'rIlce', function (r) { return r.il + '|' + r.ilce; });
@@ -1051,7 +1140,9 @@ function aPortalLookup(_, p) {
       sira: { sinif: [me.rSinif, me.rSinifN], okul: [me.rOkul, me.rOkulN], ilce: [me.rIlce, me.rIlceN], il: [me.rIl, me.rIlN], genel: [me.rGenel, me.rGenelN] },
       ort: { sinifN: cls.length, sinifNet: cls.length >= 3 ? avg_(cls.map(function (r) { return r.net; })) : null, sinifPuan: cls.length >= 3 ? avg_(cls.map(function (r) { return r.puan; })) : null,
         okulNet: avg_(okl.map(function (r) { return r.net; })), okulPuan: avg_(okl.map(function (r) { return r.puan; })), genelNet: avg_(c.rows.map(function (r) { return r.net; })), genelPuan: avg_(c.rows.map(function (r) { return r.puan; })) },
-      answers: me.answers, key: showKeys ? (c.cfg.keys[me.booklet] || '') : null, multiIsWrong: !!c.cfg.multiIsWrong
+      answers: me.answers, key: showKeys ? (c.cfg.keys[me.booklet] || '') : null, multiIsWrong: !!c.cfg.multiIsWrong,
+      kazanimlar: (safeParse_(ex.config) || {}).kazanimlar || [],
+      eylemPlani: buildPortalActionPlan_(c.cfg, me, (safeParse_(ex.config) || {}).kazanimlar || [])
     });
   });
   return { ogrenci: { okulAdi: sch.okulAdi, il: sch.il, ilce: sch.ilce, sinif: str_(st.sinif), ogrNo: no, ad: maskName_((str_(st.ad) + ' ' + str_(st.soyad)).trim()) }, exams: items };
@@ -1123,21 +1214,94 @@ function aWaQueue(u, p) {
   };
 }
 
+
+/** Veli/öğrenci sorgulama ekranı için sınav bazlı otomatik eylem planı üretir. */
+function buildPortalActionPlan_(cfg, me, kazList) {
+  var byQ = {};
+  (kazList || []).forEach(function (k) { byQ[Number(k.soru)] = k; });
+  var keyStr = (cfg.keys && cfg.keys[me.booklet]) || (cfg.keys && cfg.keys[Object.keys(cfg.keys)[0]]) || '';
+  var ansStr = String(me.answers || '');
+  var grouped = {};
+  if (keyStr && ansStr) {
+    for (var q = 1; q <= keyStr.length; q++) {
+      var kCh = keyStr.charAt(q - 1), aCh = ansStr.charAt(q - 1) || '-';
+      if (!kCh || kCh === '.' || kCh === '*') continue;
+      if (aCh !== kCh) {
+        var kz = byQ[q];
+        var ders = (kz && kz.ders) ? kz.ders : '';
+        if (!ders) {
+          var acc = 0;
+          for (var si = 0; si < cfg.sections.length; si++) {
+            acc += cfg.sections[si].count;
+            if (q <= acc) { ders = cfg.sections[si].name; break; }
+          }
+        }
+        var konu = kz ? (kz.konu || kz.kod || (q + '. soru')) : (ders + ' — ' + q + '. soru');
+        var gk = ders + '||' + konu;
+        if (!grouped[gk]) grouped[gk] = { ders: ders || 'Genel', kod: kz ? (kz.kod || '') : '', konu: konu, yanlis: 0, bos: 0, sorular: [] };
+        if (aCh === '-' || aCh === '*') grouped[gk].bos++; else grouped[gk].yanlis++;
+        grouped[gk].sorular.push(q);
+      }
+    }
+  }
+  return Object.keys(grouped).slice(0, 8).map(function (k, idx) {
+    var g = grouped[k];
+    return {
+      oncelik: idx + 1,
+      ders: g.ders,
+      kod: g.kod,
+      konu: g.konu,
+      detay: g.yanlis + ' yanlış, ' + g.bos + ' boş (Sorular: ' + g.sorular.join(', ') + ') → Konu tekrarı + 25 kazanım sorusu.'
+    };
+  });
+}
+
+/** Veli Gmail/e-posta + telefon + okul/öğrenci no + veli kodu ile kalıcı veli hesabı oluşturur. */
+function aVeliRegister(_, p) {
+  if (str_(p.website)) return { ok: true };
+  var email = str_(p.email).toLowerCase(), tel = telNorm_(p.telefon, 'Veli telefonu');
+  if (!validEmail_(email)) throw fail_('Geçerli bir Gmail / e-posta adresi girin.');
+  var pass = String(p.password || '');
+  if (pass.length < 6) throw fail_('Parola en az 6 karakter olmalı.');
+  var code = normCode_(p.okulKodu), no = normNo_(p.ogrNo), sinif = str_(p.sinif);
+  var sch = schoolMap_()[code], st = sch && no ? studentMap_()[code + '|' + no] : null;
+  if (!st || !sinif || sinifKey_(st.sinif) !== sinifKey_(sinif)) throw fail_('Okul, sınıf veya öğrenci numarası eşleşmedi.');
+  var vk = str_(st.veliKodu);
+  if (vk && str_(p.veliKodu).replace(/\s+/g, '') !== vk) throw fail_('Bu öğrenci için okulun verdiği veli kodu gerekli veya hatalı.', 'VELIKODU');
+  var existing = table_('VeliHesap').filter(function (v) { return str_(v.email).toLowerCase() === email; })[0];
+  if (existing) throw fail_('Bu e-posta adresi ile zaten kayıt yapılmış. Giriş yapabilirsiniz.');
+  var salt = Utilities.getUuid().slice(0, 12);
+  append_('VeliHesap', [{ email: email, telefon: tel, okulKodu: code, ogrNo: no, salt: salt, hash: hashPass_(salt, pass), ad: clean_(p.ad, 80) || (st.ad + ' ' + st.soyad).trim(), createdAt: now_() }]);
+  return { registered: true, email: email, okulKodu: code, ogrNo: no };
+}
+
+/** Veli Gmail/e-posta + parola ile giriş yapar ve doğrudan öğrencisinin sonuçlarını + eylem planını alır. */
+function aVeliLogin(_, p) {
+  var email = str_(p.email).toLowerCase(), pass = String(p.password || '');
+  var v = table_('VeliHesap').filter(function (x) { return str_(x.email).toLowerCase() === email; })[0];
+  if (!v || hashPass_(String(v.salt), pass) !== String(v.hash)) throw fail_('E-posta veya parola hatalı.');
+  var st = studentMap_()[String(v.okulKodu) + '|' + normNo_(v.ogrNo)];
+  if (!st) throw fail_('Kayıtlı öğrenci bulunamadı; okulunuzla iletişime geçin.');
+  return aPortalLookup(null, { okulKodu: v.okulKodu, sinif: st.sinif, ogrNo: v.ogrNo, veliKodu: st.veliKodu });
+}
+
 /** Eklentinin "gönderildi" diye bildirdiği alıcı anahtarlarını (examId|okulKodu|ogrNo|anne/baba) Gönderim sayfasına işler; bir daha kuyruğa girmezler. Tekrar çağrı zarar vermez. */
 function aWaMarkSent(u, p) {
   if (u.role === 'ogretmen') throw fail_('Yetkiniz yok.');
   var code = normCode_(p.okulKodu), sch = schoolMap_()[code];
   if (!sch || !canSeeSchool_(u, sch)) throw fail_('Bu okul için yetkiniz yok.');
-  var ex = requireExam_(u, p.examId), have = {}, st = studentMap_(), add = [], ignored = 0, already = 0, stamp = now_();
-  table_('Gonderim').forEach(function (g) { if (String(g.examId) === String(ex.examId) && String(g.okulKodu) === code) have[str_(g.key)] = 1; });
-  (Array.isArray(p.keys) ? p.keys : []).slice(0, 2000).forEach(function (k) {
-    k = str_(k); var a = k.split('|');
+  var ex = requireExam_(u, p.examId), have = {}, st = studentMap_(), add = [], ignored = 0, already = 0, failed = 0, stamp = now_();
+  table_('Gonderim').forEach(function (g) { if (String(g.examId) === String(ex.examId) && String(g.okulKodu) === code && str_(g.durum || 'ok') === 'ok') have[str_(g.key)] = 1; });
+  var items = Array.isArray(p.results) && p.results.length ? p.results : (Array.isArray(p.keys) ? p.keys.map(function (k) { return { key: k, status: 'ok' }; }) : []);
+  items.slice(0, 2000).forEach(function (it) {
+    var k = str_(it && it.key), a = k.split('|'), stVal = it && it.status === 'err' ? 'err' : 'ok';
     if (a.length !== 4 || a[0] !== String(ex.examId) || a[1] !== code || (a[3] !== 'anne' && a[3] !== 'baba') || !st[code + '|' + a[2]]) { ignored++; return; }
-    if (have[k]) { already++; return; }
-    have[k] = 1; add.push({ key: k, examId: a[0], okulKodu: a[1], ogrNo: a[2], kime: a[3], zaman: stamp, kullanici: u.username });
+    if (stVal === 'ok' && have[k]) { already++; return; }
+    if (stVal === 'ok') have[k] = 1; else failed++;
+    add.push({ key: k, examId: a[0], okulKodu: a[1], ogrNo: a[2], kime: a[3], zaman: stamp, kullanici: u.username, durum: stVal, hataKodu: clean_(it.code, 30), hataMesaj: clean_(it.error, 200) });
   });
   append_('Gonderim', add);
-  return { marked: add.length, already: already, ignored: ignored };
+  return { marked: add.length - failed, failed: failed, already: already, ignored: ignored };
 }
 
 /* ============================ OKUL / ÖĞRENCİ: TEK KAYIT EKLE · DÜZENLE · SİL ============================ */
@@ -1673,6 +1837,128 @@ function aAiTest(u, p) {
   return { provider: c.id, providerName: c.name, model: res.cand.model, tier: res.cand.tier, source: res.cand.source, ms: res.tried[res.tried.length - 1].ms, tried: res.tried, reply: clean_(res.raw, 80) };
 }
 
+
+/**
+ * İl / İlçe / Admin için bölgesel ortak sınav ve okul özet raporu.
+ * Filtreler: il, ilce (isteğe bağlı), examId (isteğe bağlı; boşsa ortak sınavlar taranır).
+ */
+function aRegionalOverview(u, p) {
+  p = p || {};
+  if (u.role === 'ogretmen') throw fail_('Yetkiniz yok.');
+  var sm = schoolMap_(), targetIl = str_(p.il) || (u.role === 'il' || u.role === 'ilce' ? u.il : '');
+  var targetIlce = str_(p.ilce) || (u.role === 'ilce' ? u.ilce : '');
+  if (u.role === 'il' && targetIl && targetIl !== u.il) throw fail_('Kendi iliniz dışını görüntüleme yetkiniz yok.');
+  if (u.role === 'ilce' && ((targetIl && targetIl !== u.il) || (targetIlce && targetIlce !== u.ilce))) throw fail_('Kendi ilçeniz dışını görüntüleme yetkiniz yok.');
+
+  var schools = Object.keys(sm).map(function (k) { return sm[k]; }).filter(function (s) {
+    if (!canSeeSchool_(u, s)) return false;
+    if (targetIl && s.il !== targetIl) return false;
+    if (targetIlce && s.ilce !== targetIlce) return false;
+    return true;
+  });
+  var allowedCodes = {};
+  schools.forEach(function (s) { allowedCodes[String(s.okulKodu)] = s; });
+
+  var stuCounts = {};
+  table_('Students').forEach(function (st) {
+    var c = String(st.okulKodu);
+    if (allowedCodes[c]) stuCounts[c] = (stuCounts[c] || 0) + 1;
+  });
+
+  var exams = table_('Exams').filter(function (ex) {
+    if (!examVisible_(u, ex)) return false;
+    if (p.examId && String(ex.examId) !== String(p.examId)) return false;
+    return true;
+  });
+
+  var schoolAgg = {};
+  Object.keys(allowedCodes).forEach(function (c) {
+    var s = allowedCodes[c];
+    schoolAgg[c] = { okulKodu: c, okulAdi: s.okulAdi, il: s.il, ilce: s.ilce, tur: s.tur, ogrenciSayisi: stuCounts[c] || 0, katilimToplam: 0, netToplam: 0, puanToplam: 0, pctToplam: 0, sinavSayisi: 0, dersNetleri: {} };
+  });
+
+  var examSummaries = [];
+  exams.forEach(function (ex) {
+    var c = computeExam_(ex);
+    var inAreaRows = c.rows.filter(function (r) { return !!allowedCodes[String(r.okulKodu)]; });
+    if (!inAreaRows.length) return;
+    var bySch = {};
+    inAreaRows.forEach(function (r) {
+      var code = String(r.okulKodu);
+      if (!bySch[code]) bySch[code] = { okulKodu: code, okulAdi: allowedCodes[code].okulAdi, ilce: allowedCodes[code].ilce, n: 0, sumNet: 0, sumPuan: 0, sumPct: 0, secSum: [] };
+      var b = bySch[code];
+      var pct = c.cfg.total > 0 ? Math.max(0, Math.min(100, (r.net / c.cfg.total) * 100)) : 0;
+      b.n++; b.sumNet += r.net; b.sumPuan += r.puan; b.sumPct += pct;
+      for (var j = 0; j < c.cfg.sections.length; j++) {
+        b.secSum[j] = (b.secSum[j] || 0) + (r.secNets[j] || 0);
+      }
+    });
+
+    var schList = Object.keys(bySch).map(function (code) {
+      var b = bySch[code];
+      var avgNet = round_(b.sumNet / b.n), avgPuan = round_(b.sumPuan / b.n), avgPct = round_(b.sumPct / b.n);
+      var secAvgs = c.cfg.sections.map(function (sec, j) {
+        var sAvg = round_((b.secSum[j] || 0) / b.n);
+        if (schoolAgg[code]) {
+          if (!schoolAgg[code].dersNetleri[sec.name]) schoolAgg[code].dersNetleri[sec.name] = { sum: 0, n: 0 };
+          schoolAgg[code].dersNetleri[sec.name].sum += sAvg;
+          schoolAgg[code].dersNetleri[sec.name].n++;
+        }
+        return { name: sec.name, count: sec.count, avgNet: sAvg, avgPct: sec.count > 0 ? round_(Math.max(0, (sAvg / sec.count) * 100)) : 0 };
+      });
+      if (schoolAgg[code]) {
+        schoolAgg[code].katilimToplam += b.n;
+        schoolAgg[code].netToplam += avgNet;
+        schoolAgg[code].puanToplam += avgPuan;
+        schoolAgg[code].pctToplam += avgPct;
+        schoolAgg[code].sinavSayisi++;
+      }
+      return { okulKodu: code, okulAdi: b.okulAdi, ilce: b.ilce, n: b.n, avgNet: avgNet, avgPuan: avgPuan, avgPct: avgPct, sections: secAvgs };
+    }).sort(function (a, b) { return b.avgPuan - a.avgPuan || b.avgNet - a.avgNet; });
+
+    schList.forEach(function (s, idx) { s.rank = idx + 1; });
+
+    var totNet = 0, totPuan = 0, totPct = 0;
+    inAreaRows.forEach(function (r) {
+      totNet += r.net; totPuan += r.puan;
+      totPct += c.cfg.total > 0 ? Math.max(0, Math.min(100, (r.net / c.cfg.total) * 100)) : 0;
+    });
+
+    examSummaries.push({
+      examId: ex.examId, name: ex.name, date: dateStr_(ex.date), scopeType: ex.scopeType, totalQ: c.cfg.total,
+      participantCount: inAreaRows.length, schoolCount: schList.length,
+      avgNet: round_(totNet / inAreaRows.length), avgPuan: round_(totPuan / inAreaRows.length), avgPct: round_(totPct / inAreaRows.length),
+      schools: schList
+    });
+  });
+
+  var schoolsOut = Object.keys(schoolAgg).map(function (c) {
+    var a = schoolAgg[c], cnt = a.sinavSayisi || 1;
+    var dersOrt = {};
+    Object.keys(a.dersNetleri).forEach(function (dn) {
+      dersOrt[dn] = round_(a.dersNetleri[dn].sum / a.dersNetleri[dn].n);
+    });
+    return {
+      okulKodu: a.okulKodu, okulAdi: a.okulAdi, il: a.il, ilce: a.ilce, tur: a.tur,
+      ogrenciSayisi: a.ogrenciSayisi, sinavSayisi: a.sinavSayisi, katilimToplam: a.katilimToplam,
+      avgNet: a.sinavSayisi ? round_(a.netToplam / cnt) : null,
+      avgPuan: a.sinavSayisi ? round_(a.puanToplam / cnt) : null,
+      avgPct: a.sinavSayisi ? round_(a.pctToplam / cnt) : null,
+      dersOrt: dersOrt
+    };
+  }).sort(function (a, b) { return (b.avgPuan == null ? -1 : b.avgPuan) - (a.avgPuan == null ? -1 : a.avgPuan); });
+
+  schoolsOut.forEach(function (s, idx) { s.rank = idx + 1; });
+
+  return {
+    il: targetIl, ilce: targetIlce,
+    schoolCount: schoolsOut.length,
+    totalStudents: schoolsOut.reduce(function (s, x) { return s + x.ogrenciSayisi; }, 0),
+    schools: schoolsOut,
+    exams: examSummaries
+  };
+}
+
 /* ============================ ROUTER ============================ */
 
 var ACTIONS = {
@@ -1684,6 +1970,8 @@ var ACTIONS = {
   decideApplication: { fn: aDecideApplication, write: true },
   portalClasses: { open: true, pre: prePortal_, fn: aPortalClasses },
   portalLookup: { open: true, pre: prePortal_, fn: aPortalLookup },
+  veliRegister: { open: true, write: true, pre: preRegister_, fn: aVeliRegister },
+  veliLogin: { open: true, pre: prePortal_, fn: aVeliLogin },
   generateParentCodes: { fn: aGenerateParentCodes, write: true },
   waQueue: { fn: aWaQueue, write: true },
   waMarkSent: { fn: aWaMarkSent, write: true },
@@ -1718,7 +2006,8 @@ var ACTIONS = {
   submitResults: { fn: aSubmit, write: true },
   deleteResult: { fn: aDeleteResult, write: true },
   getResults: { fn: aResults },
-  getAnalysis: { fn: aAnalysis }
+  getAnalysis: { fn: aAnalysis },
+  regionalOverview: { fn: aRegionalOverview }
 };
 
 /* ============================ DEMO VERİ ============================ */
