@@ -1604,19 +1604,24 @@ function aiRank_(pid, ids) {
   return out;
 }
 function aiModels_(c, force) {
+  var d = c.def.defaults || {}, fallbackIds = [];
+  if (c.model) fallbackIds.push(c.model);
+  ['balanced', 'fast', 'best'].forEach(function (t) { if (d[t] && fallbackIds.indexOf(d[t]) < 0) fallbackIds.push(d[t]); });
   if (c.id === 'compat' || c.id === 'openrouter' || c.id === 'groq' || c.id === 'mistral') {
-    var d = c.def.defaults || {}, arr = [];
-    if (c.model) arr.push(c.model);
-    ['balanced', 'fast', 'best'].forEach(function (t) { if (d[t] && arr.indexOf(d[t]) < 0) arr.push(d[t]); });
-    return { ids: arr, listed: false, err: '' };
+    return { ids: fallbackIds, listed: false, err: '' };
   }
   var cache = CacheService.getScriptCache(), key = 'aim_' + c.id + '_' + aiKeyTag_(c.key), hit = null;
-  if (!force) { try { hit = safeParse_(cache.get(key)); } catch (e) { } if (hit && hit.ids) return hit; }
+  if (!force) {
+    try { hit = safeParse_(cache.get(key)); } catch (e) { }
+    if (hit && hit.ids && hit.ids.length) return hit;
+    // Sayfa açılışında canlı HTTP isteği atma; yerleşik güncel varsayılanları anında döndür (canlı tarama yalnızca "Modelleri yeniden tara" ile yapılır).
+    return { ids: fallbackIds, listed: false, err: '' };
+  }
   var ids = null, err = '';
   try { ids = aiListModels_(c); } catch (e) { err = String(e && e.message || e).slice(0, 200); }
   var rk = ids ? aiRank_(c.id, ids) : { fast: [], balanced: [], best: [] }, keep = [];
   AI_TIERS.forEach(function (t) { keep = keep.concat(rk[t].slice(0, 12)); });
-  var out = { ids: keep, listed: !!ids, err: err };
+  var out = { ids: keep.length ? keep : fallbackIds, listed: !!ids, err: err };
   try { cache.put(key, JSON.stringify(out), ids ? AI_MODELS_TTL : 300); } catch (e) { }
   return out;
 }
@@ -1643,35 +1648,34 @@ function aiPlan_(c, tier, model, force, md0) {
     (AI_ORDER_[tier] || AI_ORDER_.auto).forEach(function (t) { addM(pk[t], t, md.listed ? 'list' : 'default'); });
   }
   var out = [], keys = c.keys && c.keys.length ? c.keys : (c.key ? [c.key] : []);
-  // Önce birincil modelle tüm anahtarları dene (kota dolunca aynı sağlayıcının 2., 3., 4. anahtarına geçer)
-  models.forEach(function (mObj) {
+  models.forEach(function (mObj, mi) {
     keys.forEach(function (k, ki) {
       var cCopy = {};
       for (var prop in c) cCopy[prop] = c[prop];
       cCopy.key = k;
       cCopy.keyIndex = ki + 1;
-      out.push({ c: cCopy, model: mObj.model, tier: mObj.tier, source: mObj.source, keyIndex: ki + 1 });
+      out.push({ c: cCopy, model: mObj.model, tier: mObj.tier, source: mObj.source, keyIndex: ki + 1, pass: mi });
     });
   });
   return out;
 }
 function aiChain_(cfg, prov, tier, model) {
   var active = cfg.providers.filter(function (c) { return c.ok; });
-  if (prov && prov !== 'auto') {
-    var one = active.filter(function (c) { return c.id === prov; });
-    if (!one.length) throw fail_('Seçilen yapay zekâ sağlayıcısı tanımlı değil.', 'NOAI');
-    active = one.concat(active.filter(function (c) { return c.id !== prov; }));
-  } else if (cfg.provider !== 'auto') {
-    var pri = active.filter(function (c) { return c.id === cfg.provider; });
-    active = pri.concat(active.filter(function (c) { return c.id !== cfg.provider; }));
+  if (!active.length) throw fail_('Hiçbir yapay zekâ sağlayıcısında API anahtarı tanımlı değil. Yönetim → Yapay zekâ ekranından ücretsiz anahtar ekleyin.', 'NOAI');
+  var prefer = (prov && prov !== 'auto') ? prov : (cfg.provider !== 'auto' ? cfg.provider : '');
+  if (prefer) {
+    var one = active.filter(function (c) { return c.id === prefer; });
+    if (one.length) active = one.concat(active.filter(function (c) { return c.id !== prefer; }));
   }
-  var out = [];
+  // 1. tur: Her aktif sağlayıcının tüm anahtarları (birincil modelle: Gemini #1→#2→#3→#4 → OpenRouter → Groq → Mistral...)
+  // 2. tur: Gerekirse ikincil yedek modeller
+  var pass0 = [], passRest = [];
   active.forEach(function (c, i) {
     var md = aiModels_(c, false);
     var pl = aiPlan_(c, tier, i === 0 && model && md.ids.indexOf(model) >= 0 ? model : '', false, md);
-    pl.forEach(function (x) { out.push(x); });
+    pl.forEach(function (x) { if (x.pass === 0) pass0.push(x); else passRest.push(x); });
   });
-  return out;
+  return pass0.concat(passRest);
 }
 
 /* ---- Sağlayıcıya özel çağrılar ---- */
@@ -1879,12 +1883,8 @@ function aAiParseExternalPdf(u, p) {
   throttle_('ai_u_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), AI_USER_PER_HOUR, 3600, 'Saatlik yapay zekâ analiz sınırına ulaştınız.');
   throttle_('ai_all_' + new Date().toISOString().slice(0, 10), AI_ALL_PER_DAY, 86400, 'Günlük yapay zekâ analiz sınırına ulaşıldı.');
   var pr = aiReqPrefs_(cfg, p);
+  // PDF için Gemini varsa ilk sıraya alınır, ancak Gemini yoksa veya kotaları biterse diğer tüm aktif sağlayıcılar (OpenRouter, Groq, Mistral vb.) sırayla denenir.
   var chain = aiChain_(cfg, isPdf && !pr.provider ? 'gemini' : pr.provider, pr.tier, pr.model);
-  if (isPdf) {
-    var gemOnly = chain.filter(function (x) { return x.c.id === 'gemini'; });
-    if (gemOnly.length) chain = gemOnly;
-    else throw fail_('Doğrudan PDF okumak için ücretsiz Google Gemini API anahtarı gerekir (aistudio.google.com/apikey) veya tarayıcıdan sayfa görüntüsü olarak gönderin.', 'NOAI');
-  }
   var prompt = 'Extract the complete exam result table from this Turkish exam report. Preserve Turkish characters, student numbers, class names, D/Y/N per lesson, total D/Y/N, exam score (e.g. LGS Puanı), and ranks (Snf, Okul, İlçe, İl, Genel, %). ' +
     (p.hint ? 'Note: ' + clean_(p.hint, 200) + ' ' : '') + 'Return valid JSON only.';
   var res = aiTry_(chain, AI_EXT_PDF_SYSTEM_, prompt, rawData, mt, function (out) {
