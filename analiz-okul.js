@@ -121,37 +121,322 @@ function okulRender(pane, sel, ctx) {
         clear(target);
         const rSchools = reg.schools || [], rExams = reg.exams || [];
         const activeSch = school ? String(school.okulKodu) : '';
-        const turler = Array.from(new Set(rSchools.map(s => s.tur).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'));
-        let selTur = '', onlyPicked = false;
+        const normTur = t => String(t || '').trim().toLocaleLowerCase('tr');
+        const turlerMap = new Map();
+        rSchools.forEach(s => {
+          const raw = String(s.tur || '').trim();
+          if (raw) {
+            const k = normTur(raw);
+            if (!turlerMap.has(k)) turlerMap.set(k, raw);
+          }
+        });
+        const turler = Array.from(turlerMap.values()).sort((a, b) => a.localeCompare(b, 'tr'));
+        let selTur = '', onlyPicked = false, regView = 'genel', selDers = '';
         const picked = new Set(rSchools.map(s => String(s.okulKodu)));
+
         const turSel = h('select', { onchange: e => { selTur = e.target.value; paintReg(); } },
           h('option', { value: '' }, 'Tüm düzeyler (İlkokul / Ortaokul / Lise)'),
-          turler.map(t => h('option', { value: t }, t)));
+          turler.map(t => h('option', { value: normTur(t) }, t)));
         const onlyChk = h('input', { type: 'checkbox', style: { width: 'auto', minHeight: 0 }, onchange: e => { onlyPicked = e.target.checked; paintReg(); } });
+        const viewTabs = h('div', { class: 'tabs no-print', style: { marginBottom: '.6rem' } });
         const regOut = h('div');
 
+        /** İlçe / İl Milli Eğitim şablonu: başarısızlık nedenleri ve yönetsel değerlendirme üretir. */
+        function buildMemComments(cmpList, dersler, dStats, relExams, grpAvgPct) {
+          const out = [];
+          const withPuan = cmpList.filter(s => s.avgPuan != null).sort((a, b) => b.avgPuan - a.avgPuan);
+          const withPct = cmpList.filter(s => s.avgPct != null).sort((a, b) => b.avgPct - a.avgPct);
+          if (withPuan.length) {
+            out.push(`Genel puan sıralamasında 1. okul: ${withPuan[0].okulAdi} (${nf(withPuan[0].avgPuan, 2)} puan · %${nf(withPuan[0].avgPct, 1)} başarı).`);
+          }
+          if (withPct.length >= 2) {
+            const top = withPct[0], low = withPct[withPct.length - 1];
+            const gap = top.avgPct - low.avgPct;
+            if (gap >= 20) {
+              out.push(`Okullar arası başarı makası yüksek (${nf(gap, 1)} puan: ${top.okulAdi} %${nf(top.avgPct, 1)} ↔ ${low.okulAdi} %${nf(low.avgPct, 1)}). Bu fark, okullar arası imkân/kaynak erişimi, zümre uygulama birliği ve DYK/etüt yoğunluğundaki farklılıklardan kaynaklanabilir; düşük ortalamalı okullara kardeş okul eşleştirmesi ve ortak kazanım fasikülü önerilir.`);
+            } else {
+              out.push(`Okullar arası başarı farkı dengeli (${nf(gap, 1)} puan). Ortak zümre uygulamaları genel standardı koruyor.`);
+            }
+          }
+          if (grpAvgPct != null) {
+            if (grpAvgPct < 45) {
+              out.push(`Bölge genel başarı ortalaması (%${nf(grpAvgPct, 1)}) kritik eşiğin (%45) altındadır. Temel kavram eksikleri, okuduğunu anlama/yeni nesil soru pratiği yetersizliği ve sınav süre yönetimi sorunları başlıca başarısızlık nedenleri olarak öne çıkmaktadır.`);
+            } else if (grpAvgPct < 60) {
+              out.push(`Bölge genel başarı ortalaması (%${nf(grpAvgPct, 1)}) gelişime açık düzeydedir. Konu tekrarı sonrası kazanım odaklı tarama testleri ile %60+ bandına taşınabilir.`);
+            } else {
+              out.push(`Bölge genel başarı ortalaması (%${nf(grpAvgPct, 1)}) güçlü düzeydedir; üst düzey soru çözümü ve bireysel koçlukla dereceler artırılabilir.`);
+            }
+          }
+          if (dStats.length >= 2) {
+            const byAvg = dStats.slice().sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1));
+            const bestD = byAvg[0], worstD = byAvg[byAvg.length - 1];
+            out.push(`Ders bazlı performans: En yüksek ortalama ${bestD.ders} (${nf(bestD.avg, 2)} net · 1. okul: ${bestD.first ? bestD.first.okulAdi : '–'}), en düşük ortalama ${worstD.ders} (${nf(worstD.avg, 2)} net · en düşük okul: ${worstD.last ? worstD.last.okulAdi : '–'}).`);
+            out.push(`Başarısızlık Odağı (${worstD.ders}): ${worstD.ders} dersindeki düşük ortalamanın temel nedenleri arasında ön koşul kazanım eksikleri, soru kökü/yorumlama hataları ve deneme sonrası yanlış analizi yapılmaması yer alır. İlçe ${worstD.ders} zümresi toplanarak ortak telafi planı ve haftalık kazanım izleme sınavı uygulanmalıdır.`);
+          }
+          const noExamSch = cmpList.filter(s => !s.sinavSayisi);
+          if (noExamSch.length) {
+            out.push(`Katılım Uyarısı: Seçili ${noExamSch.length} okulda (${noExamSch.slice(0, 4).map(s => s.okulAdi).join(', ')}${noExamSch.length > 4 ? '…' : ''}) henüz sonuçlanmış ortak sınav kaydı görünmüyor; veri bütünlüğü için optik/sonuç yüklemesi tamamlanmalıdır.`);
+          }
+          if (relExams.length >= 2) {
+            const firstE = relExams[0], lastE = relExams[relExams.length - 1];
+            if (firstE.avgPct != null && lastE.avgPct != null) {
+              const chg = lastE.avgPct - firstE.avgPct;
+              out.push(`Ortak sınav trendi: ${firstE.name} (%${nf(firstE.avgPct, 1)}) → ${lastE.name} (%${nf(lastE.avgPct, 1)}) (${ogSgn(chg, 1, ' puan')}).`);
+            }
+          }
+          return out;
+        }
+
+        function exportRegXlsx(cmpList, dersler, dStats, relExams, comments) {
+          if (!cmpList.length) return toast('Önce en az bir okul seçin', 'warn');
+          const ozetRows = [
+            [{ v: 'İlçe / İl Milli Eğitim Toplu Okul Analiz Raporu', s: 'b' }, new Date().toLocaleDateString('tr-TR')],
+            [{ v: 'Kapsam / Düzey', s: 'b' }, selTur ? (turlerMap.get(selTur) || selTur) : 'Tüm düzeyler'],
+            [{ v: 'Karşılaştırılan Okul', s: 'b' }, cmpList.length],
+            [],
+            [{ v: 'Değerlendirme ve Başarısızlık Nedenleri Analizi', s: 'b' }]
+          ].concat((comments || []).map(c => ['', c]));
+
+          const genelRows = [ogHd(['Sıra', 'Okul', 'Düzey', 'İlçe', 'Öğrenci', 'Sınav', 'Ort. Net', 'Ort. Puan', 'Başarı %', ...dersler.map(d => d + ' Net')])].concat(
+            cmpList.map((s, i) => [i + 1, s.okulAdi, s.tur || '', s.ilce || '', s.ogrenciSayisi ?? 0, s.sinavSayisi ?? 0, ogN2(s.avgNet), ogN2(s.avgPuan), ogN2(s.avgPct), ...dersler.map(d => ogN2(s.dersOrt && s.dersOrt[d]))])
+          );
+
+          const dersBirinciRows = [ogHd(['Ders', 'Bölge Ort. Net', '1. Okul', '1. Okul Net', 'En Düşük Okul', 'En Düşük Net', 'Makas (Fark)'])].concat(
+            (dStats || []).map(x => [x.ders, ogN2(x.avg), x.first ? x.first.okulAdi : '', ogN2(x.firstVal), x.last ? x.last.okulAdi : '', ogN2(x.lastVal), ogN2(x.gap)])
+          );
+
+          const examRows = [ogHd(['Sınav', 'Tarih', 'Katılan Okul', 'Katılan Öğrenci', 'Bölge Ort. %', '1. Okul', '1. Okul Ort. %', '1. Okul Puan'])].concat(
+            (relExams || []).map(ex => {
+              const scs = (ex.schools || []).slice().sort((a, b) => (b.avgPuan ?? b.avgNet ?? -1) - (a.avgPuan ?? a.avgNet ?? -1));
+              const top = scs[0];
+              return [ex.name, anFmtDate(ex.date), ex.schoolCount || scs.length, ex.participantCount || 0, ogN2(ex.avgPct), top ? top.okulAdi : '', ogN2(top && top.avgPct), ogN2(top && top.avgPuan)];
+            })
+          );
+
+          ogDownload(`ilce-mem-toplu-okul-analizi-${(selTur || 'tum-okullar').replace(/[^\w-]+/g, '_')}.xlsx`, [
+            { name: 'MEM Değerlendirme', rows: ozetRows, widths: [34, 85] },
+            { name: 'Okul Sıralaması', rows: genelRows, freeze: { row: 1, col: 3 } },
+            { name: 'Ders Birincileri', rows: dersBirinciRows, freeze: { row: 1, col: 1 } },
+            { name: 'Ortak Sınav Birincileri', rows: examRows, freeze: { row: 1, col: 2 } }
+          ]);
+        }
+
         function paintReg() {
+          clear(viewTabs).append(
+            [
+              ['genel', 'Genel Başarı & MEM Raporu'],
+              ['ders', 'Ders Bazlı & Ders Birincileri'],
+              ['sinav', 'Ortak Sınavlar & Sınav Birincileri']
+            ].map(([id, lbl]) =>
+              h('button', { type: 'button', class: regView === id ? 'active' : '', onclick: () => { regView = id; paintReg(); } }, lbl)
+            )
+          );
           clear(regOut);
-          const inTur = rSchools.filter(s => !selTur || s.tur === selTur);
+          const inTur = rSchools.filter(s => !selTur || normTur(s.tur) === selTur);
           const shown = onlyPicked ? inTur.filter(s => picked.has(String(s.okulKodu))) : inTur;
           const cmpList = inTur.filter(s => picked.has(String(s.okulKodu)));
           const dersler = Array.from(new Set(cmpList.flatMap(s => Object.keys(s.dersOrt || {}))));
+          if (selDers && !dersler.includes(selDers)) selDers = '';
           const validNet = cmpList.filter(s => s.avgNet != null);
+          const validPct = cmpList.filter(s => s.avgPct != null);
+          const grpAvgNet = validNet.length ? validNet.reduce((a, s) => a + (s.avgNet || 0), 0) / validNet.length : null;
+          const grpAvgPct = validPct.length ? validPct.reduce((a, s) => a + (s.avgPct || 0), 0) / validPct.length : null;
 
+          // Ders istatistikleri ve her dersin 1. / sonuncu okulu
+          const dStats = dersler.map(d => {
+            const list = cmpList.filter(s => s.dersOrt && s.dersOrt[d] != null).map(s => ({ s, v: Number(s.dersOrt[d]) })).sort((a, b) => b.v - a.v);
+            const avg = list.length ? list.reduce((a, x) => a + x.v, 0) / list.length : null;
+            return {
+              ders: d, avg, n: list.length,
+              first: list[0] ? list[0].s : null, firstVal: list[0] ? list[0].v : null,
+              last: list.length > 1 ? list[list.length - 1].s : null, lastVal: list.length > 1 ? list[list.length - 1].v : null,
+              gap: list.length > 1 ? (list[0].v - list[list.length - 1].v) : null
+            };
+          });
+
+          const pickedSet = new Set(cmpList.map(s => String(s.okulKodu)));
+          const relExams = rExams
+            .filter(ex => (ex.schools || []).some(s => pickedSet.has(String(s.okulKodu))))
+            .map(ex => {
+              const scs = (ex.schools || []).filter(s => pickedSet.has(String(s.okulKodu)));
+              return Object.assign({}, ex, { schools: scs });
+            });
+
+          const memComments = buildMemComments(cmpList, dersler, dStats, relExams, grpAvgPct);
+
+          // Liderlik + Üst KPI özeti
+          const topPuan = cmpList.filter(s => s.avgPuan != null).sort((a, b) => b.avgPuan - a.avgPuan)[0];
+          const topNet = validNet.slice().sort((a, b) => b.avgNet - a.avgNet)[0];
           regOut.append(
             h('div', { class: 'stats', style: { marginBottom: '.7rem' } },
-              ogStat(cmpList.length, 'karşılaştırılan okul', `${inTur.length} okul içinde`),
-              ogStat(cmpList.reduce((a, s) => a + (s.ogrenciSayisi || 0), 0), 'kayıtlı öğrenci'),
-              ogStat(rExams.length, 'ortak sınav'),
-              ogStat(validNet.length ? nf(validNet.reduce((a, s) => a + (s.avgNet || 0), 0) / validNet.length, 2) : '–', 'seçili okullar ort. net')
+              ogStat(cmpList.length, 'analiz edilen okul', `${inTur.length} okul içinde`),
+              ogStat(cmpList.reduce((a, s) => a + (s.ogrenciSayisi || 0), 0), 'toplam öğrenci'),
+              ogStat(grpAvgNet != null ? nf(grpAvgNet, 2) : '–', 'seçili okullar ort. net', grpAvgPct != null ? `ort. %${nf(grpAvgPct, 1)}` : ''),
+              ogStat(topPuan ? topPuan.okulAdi : (topNet ? topNet.okulAdi : '–'), 'genel 1. okul', topPuan ? `${nf(topPuan.avgPuan, 2)} puan` : (topNet ? `${nf(topNet.avgNet, 2)} net` : '')),
+              ogStat(relExams.length, 'ortak sınav')
             )
           );
+
+          if (regView === 'ders') {
+            if (!dersler.length) {
+              regOut.append(h('div', { class: 'empty' }, 'Seçili okullar için ders bazlı sınav verisi bulunamadı.'));
+              return;
+            }
+            // Her dersin 1. okulu ve en düşük okulu özet tablosu
+            regOut.append(
+              h('h3', { class: 'og-h3', style: { marginTop: 0 } }, 'Ders Bazında 1. Okullar ve Başarı Makası'),
+              h('div', { class: 'tablewrap', style: { marginBottom: '.8rem' } },
+                h('table', { class: 'an-table zebra-tbl' },
+                  h('thead', null, h('tr', null, ['Ders', 'Bölge Ort. Net', '1. Okul', '1. Net', 'En Düşük Okul', 'En Düşük Net', 'Makas'].map((t, i) => h('th', { class: [1, 3, 5, 6].includes(i) ? 'num' : '' }, t)))),
+                  h('tbody', null, dStats.map(x => h('tr', null,
+                    h('td', null, h('b', null, x.ders)),
+                    h('td', { class: 'num' }, x.avg != null ? nf(x.avg, 2) : '–'),
+                    h('td', null, x.first ? h('b', { style: { color: 'var(--brand)' } }, '🏆 ' + x.first.okulAdi) : '–'),
+                    h('td', { class: 'num' }, x.firstVal != null ? h('b', null, nf(x.firstVal, 2)) : '–'),
+                    h('td', null, x.last ? x.last.okulAdi : '–'),
+                    h('td', { class: 'num' }, x.lastVal != null ? nf(x.lastVal, 2) : '–'),
+                    h('td', { class: 'num' }, x.gap != null ? nf(x.gap, 2) : '–')
+                  )))
+                )
+              )
+            );
+
+            const dSel = h('select', { onchange: e => { selDers = e.target.value; paintReg(); } },
+              h('option', { value: '' }, 'Tüm dersler (Okul × Ders Matrisi)'),
+              dersler.map(d => h('option', { value: d }, d + ' — Okul Sıralaması')));
+            dSel.value = selDers;
+            regOut.append(h('div', { class: 'row an-f no-print', style: { marginBottom: '.6rem' } }, h('b', null, 'Detay Ders'), dSel));
+
+            if (selDers) {
+              const rankedD = cmpList
+                .map(s => ({ s, v: (s.dersOrt && s.dersOrt[selDers] != null) ? Number(s.dersOrt[selDers]) : null }))
+                .filter(x => x.v != null)
+                .sort((a, b) => b.v - a.v);
+              const dAvg = rankedD.length ? rankedD.reduce((a, x) => a + x.v, 0) / rankedD.length : null;
+              if (rankedD.length >= 2 && typeof AnViz !== 'undefined') {
+                regOut.append(h('div', { style: { marginBottom: '.7rem' } },
+                  AnViz.bars({
+                    rows: rankedD.slice(0, 20).map(x => ({ label: x.s.okulAdi, sub: x.s.ilce || '', vals: [x.v] })),
+                    series: [{ name: selDers + ' Ort. Net', c: 1 }],
+                    fmt: v => nf(v, 2) + ' net', label: selDers + ' okul sıralaması'
+                  })
+                ));
+              }
+              regOut.append(h('div', { class: 'tablewrap' },
+                h('table', { class: 'an-table zebra-tbl' },
+                  h('thead', null, h('tr', null, ['Sıra', 'Okul', 'Düzey', 'İlçe', selDers + ' Ort. Net', 'Bölge Ort. Farkı', 'Genel Ort. %'].map((t, i) => h('th', { class: i >= 4 ? 'num' : '' }, t)))),
+                  h('tbody', null, rankedD.map((x, idx) => {
+                    const diff = dAvg != null ? x.v - dAvg : null;
+                    return h('tr', { class: 'an-row', onclick: () => { AN.okul = String(x.s.okulKodu); Sel.set({ okul: String(x.s.okulKodu) }); ctx.draw(); } },
+                      h('td', { class: 'num' }, h('b', null, idx === 0 ? '🏆 1' : (idx + 1))),
+                      h('td', null, h('b', null, x.s.okulAdi)),
+                      h('td', { class: 'small muted' }, x.s.tur || ''),
+                      h('td', null, x.s.ilce || ''),
+                      h('td', { class: 'num', style: snHeat(x.v, dAvg, 4) }, h('b', null, nf(x.v, 2))),
+                      h('td', { class: 'num' }, diff == null ? '–' : ogSgn(diff, 2)),
+                      h('td', { class: 'num' }, x.s.avgPct != null ? '%' + nf(x.s.avgPct, 1) : '–')
+                    );
+                  }))
+                )
+              ));
+            } else {
+              const dAvgs = dStats.map(x => x.avg);
+              regOut.append(
+                h('div', { class: 'tablewrap' },
+                  h('table', { class: 'an-table zebra-tbl' },
+                    h('thead', null, h('tr', null, ['Sıra', 'Okul', 'Düzey', ...dersler.map(d => d + ' Net'), 'Genel Net', 'Başarı %'].map((t, i) => h('th', { class: i >= 3 ? 'num' : '' }, t)))),
+                    h('tbody', null,
+                      cmpList.map((s, idx) => h('tr', { class: 'an-row', onclick: () => { AN.okul = String(s.okulKodu); Sel.set({ okul: String(s.okulKodu) }); ctx.draw(); } },
+                        h('td', { class: 'num' }, h('b', null, idx + 1)),
+                        h('td', null, h('b', null, s.okulAdi)),
+                        h('td', { class: 'small muted' }, s.tur || ''),
+                        ...dersler.map((d, di) => {
+                          const v = (s.dersOrt && s.dersOrt[d] != null) ? Number(s.dersOrt[d]) : null;
+                          return h('td', { class: 'num', style: snHeat(v, dAvgs[di], 4) }, v != null ? nf(v, 2) : '–');
+                        }),
+                        h('td', { class: 'num' }, s.avgNet != null ? h('b', null, nf(s.avgNet, 2)) : '–'),
+                        h('td', { class: 'num' }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–')
+                      )),
+                      h('tr', { class: 'sn-all' },
+                        h('td'), h('td', { colspan: 2 }, h('b', null, 'Seçili Okullar Ortalaması')),
+                        ...dAvgs.map(v => h('td', { class: 'num' }, h('b', null, v != null ? nf(v, 2) : '–'))),
+                        h('td', { class: 'num' }, h('b', null, grpAvgNet != null ? nf(grpAvgNet, 2) : '–')),
+                        h('td', { class: 'num' }, h('b', null, grpAvgPct != null ? '%' + nf(grpAvgPct, 1) : '–'))
+                      )
+                    )
+                  )
+                ),
+                h('p', { class: 'small muted' }, 'Mavi tonlar seçili okullar ortalamasının üstünü, kırmızı tonlar altını gösterir.')
+              );
+            }
+            return;
+          }
+
+          if (regView === 'sinav') {
+            if (!relExams.length) {
+              regOut.append(h('div', { class: 'empty' }, 'Seçili okulların katıldığı ortak sınav bulunamadı.'));
+              return;
+            }
+            // Ortak sınav birincileri tablosu
+            regOut.append(
+              h('h3', { class: 'og-h3', style: { marginTop: 0 } }, 'Ortak Sınav Birincileri'),
+              h('div', { class: 'tablewrap', style: { marginBottom: '.8rem' } },
+                h('table', { class: 'an-table zebra-tbl' },
+                  h('thead', null, h('tr', null, ['Tarih', 'Ortak Sınav', 'Okul', 'Öğrenci', 'Bölge Ort. %', '1. Okul', '1. Okul Ort. %', '1. Okul Puan'].map((t, i) => h('th', { class: [2, 3, 4, 6, 7].includes(i) ? 'num' : '' }, t)))),
+                  h('tbody', null, relExams.map(ex => {
+                    const scs = (ex.schools || []).slice().sort((a, b) => (b.avgPuan ?? b.avgNet ?? -1) - (a.avgPuan ?? a.avgNet ?? -1));
+                    const top = scs[0];
+                    return h('tr', null,
+                      h('td', { class: 'nowrap' }, anFmtDate(ex.date)),
+                      h('td', null, h('b', null, ex.name)),
+                      h('td', { class: 'num' }, scs.length),
+                      h('td', { class: 'num' }, scs.reduce((a, x) => a + (x.n || 0), 0)),
+                      h('td', { class: 'num' }, ex.avgPct != null ? '%' + nf(ex.avgPct, 1) : '–'),
+                      h('td', null, top ? h('b', { style: { color: 'var(--brand)' } }, '🏆 ' + top.okulAdi) : '–'),
+                      h('td', { class: 'num' }, top && top.avgPct != null ? h('b', null, '%' + nf(top.avgPct, 1)) : '–'),
+                      h('td', { class: 'num' }, top && top.avgPuan != null ? nf(top.avgPuan, 2) : '–')
+                    );
+                  }))
+                )
+              ),
+              h('h3', { class: 'og-h3' }, 'Okul × Ortak Sınav Başarı Matrisi (%)'),
+              h('div', { class: 'tablewrap' },
+                h('table', { class: 'an-table zebra-tbl' },
+                  h('thead', null, h('tr', null, ['Okul', 'Düzey', ...relExams.map(ex => `${anFmtDate(ex.date).slice(0, 5)} ${ex.name.length > 14 ? ex.name.slice(0, 13) + '…' : ex.name}`), 'Genel Ort. %'].map((t, i) => h('th', { class: i >= 2 ? 'num' : '' }, t)))),
+                  h('tbody', null, cmpList.map(s => {
+                    const code = String(s.okulKodu);
+                    return h('tr', { class: 'an-row', onclick: () => { AN.okul = code; Sel.set({ okul: code }); ctx.draw(); } },
+                      h('td', null, h('b', null, s.okulAdi)),
+                      h('td', { class: 'small muted' }, s.tur || ''),
+                      ...relExams.map(ex => {
+                        const hit = (ex.schools || []).find(x => String(x.okulKodu) === code);
+                        return h('td', { class: 'num', style: hit ? snHeat(hit.avgPct, ex.avgPct, 15) : null }, hit ? `%${nf(hit.avgPct, 1)}` : '–');
+                      }),
+                      h('td', { class: 'num' }, h('b', null, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'))
+                    );
+                  }))
+                )
+              ),
+              h('p', { class: 'small muted' }, 'Hücreler her sınavdaki okul ortalama başarı yüzdesidir; renk o sınavın bölge ortalamasına göre farkı gösterir.')
+            );
+            return;
+          }
+
+          // Varsayılan görünüm: İlçe MEM Değerlendirme + Başarısızlık Nedenleri + Grafik + Okul Sıralaması
+          if (memComments.length) {
+            regOut.append(
+              h('div', { class: 'card', style: { background: 'var(--bg-soft, #f8fafc)', border: '1px solid var(--line)', marginBottom: '.7rem' } },
+                h('h3', { style: { margin: '0 0 .4rem', fontSize: '.98rem' } }, '📋 İlçe / İl Milli Eğitim Değerlendirmesi & Başarısızlık Nedenleri Analizi'),
+                h('ul', { class: 'kr-notes', style: { margin: 0, paddingLeft: '1.2rem' } }, memComments.map(t => h('li', null, t)))
+              )
+            );
+          }
 
           if (cmpList.length >= 2 && typeof AnViz !== 'undefined' && cmpList.some(s => s.avgPct != null)) {
             regOut.append(
               h('div', { style: { marginBottom: '.7rem' } },
                 AnViz.bars({
-                  rows: cmpList.filter(s => s.avgPct != null).slice(0, 15).map(s => ({ label: s.okulAdi, sub: s.ilce || '', vals: [s.avgPct] })),
+                  rows: cmpList.filter(s => s.avgPct != null).slice(0, 20).map(s => ({ label: s.okulAdi, sub: s.ilce || '', vals: [s.avgPct] })),
                   series: [{ name: 'Seçili okullar ort. başarı %', c: 1 }],
                   fmt: v => '%' + nf(v, 1), max: 100, min: 0, xFmt: v => v + '%', label: 'Seçili okullar karşılaştırması'
                 })
@@ -170,7 +455,7 @@ function okulRender(pane, sel, ctx) {
                       return h('tr', { class: 'an-row' + (code === activeSch ? ' mine' : '') },
                         h('td', { onclick: ev => ev.stopPropagation() },
                           h('input', { type: 'checkbox', checked: picked.has(code), style: { width: 'auto', minHeight: 0 }, 'aria-label': s.okulAdi + ' seç', onchange: ev => { ev.target.checked ? picked.add(code) : picked.delete(code); paintReg(); } })),
-                        h('td', { class: 'num' }, h('b', null, idx + 1)),
+                        h('td', { class: 'num' }, h('b', null, idx === 0 && s.avgPct != null ? '🏆 1' : (idx + 1))),
                         h('td', { title: 'Bu okulun detay analizine geç', onclick: () => { AN.okul = code; Sel.set({ okul: code }); ctx.draw(); } }, h('b', null, s.okulAdi)),
                         h('td', { class: 'small muted' }, s.tur || ''),
                         h('td', null, s.ilce || ''),
@@ -178,7 +463,7 @@ function okulRender(pane, sel, ctx) {
                         h('td', { class: 'num' }, s.sinavSayisi ?? 0),
                         h('td', { class: 'num' }, s.avgNet != null ? h('b', null, nf(s.avgNet, 2)) : '–'),
                         h('td', { class: 'num' }, s.avgPuan != null ? nf(s.avgPuan, 2) : '–'),
-                        h('td', { class: 'num' }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'),
+                        h('td', { class: 'num', style: snHeat(s.avgPct, grpAvgPct, 15) }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'),
                         ...dersler.map(d => h('td', { class: 'num' }, (s.dersOrt && s.dersOrt[d] != null) ? nf(s.dersOrt[d], 2) : '–'))
                       );
                     }))
@@ -189,12 +474,28 @@ function okulRender(pane, sel, ctx) {
         }
 
         target.append(
-          h('div', { class: 'row an-f no-print', style: { marginBottom: '.6rem', gap: '.5rem' } },
+          h('div', { class: 'row an-f no-print', style: { marginBottom: '.6rem', gap: '.45rem' } },
             turSel,
-            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || s.tur === selTur).forEach(s => picked.add(String(s.okulKodu))); paintReg(); } }, 'Tümünü seç'),
-            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || s.tur === selTur).forEach(s => picked.delete(String(s.okulKodu))); paintReg(); } }, 'Temizle'),
-            h('label', { class: 'small row', style: { gap: '.3rem' } }, onlyChk, 'Yalnızca seçilenleri göster (2–3+ okul kıyasla)')
+            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || normTur(s.tur) === selTur).forEach(s => picked.add(String(s.okulKodu))); paintReg(); } }, 'Tümünü seç'),
+            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || normTur(s.tur) === selTur).forEach(s => picked.delete(String(s.okulKodu))); paintReg(); } }, 'Temizle'),
+            h('label', { class: 'small row', style: { gap: '.3rem' } }, onlyChk, 'Yalnızca seçilenleri göster'),
+            h('span', { class: 'grow' }),
+            h('button', { type: 'button', class: 'btn sm primary', onclick: () => {
+              const inTur = rSchools.filter(s => !selTur || normTur(s.tur) === selTur);
+              const cmp = inTur.filter(s => picked.has(String(s.okulKodu)));
+              const dl = Array.from(new Set(cmp.flatMap(s => Object.keys(s.dersOrt || {}))));
+              const ds = dl.map(d => {
+                const list = cmp.filter(s => s.dersOrt && s.dersOrt[d] != null).map(s => ({ s, v: Number(s.dersOrt[d]) })).sort((a, b) => b.v - a.v);
+                return { ders: d, avg: list.length ? list.reduce((a, x) => a + x.v, 0) / list.length : null, first: list[0] && list[0].s, firstVal: list[0] && list[0].v, last: list.length > 1 ? list[list.length - 1].s : null, lastVal: list.length > 1 ? list[list.length - 1].v : null, gap: list.length > 1 ? list[0].v - list[list.length - 1].v : null };
+              });
+              const pSet = new Set(cmp.map(s => String(s.okulKodu)));
+              const rEx = rExams.filter(ex => (ex.schools || []).some(s => pSet.has(String(s.okulKodu)))).map(ex => Object.assign({}, ex, { schools: (ex.schools || []).filter(s => pSet.has(String(s.okulKodu))) }));
+              const vp = cmp.filter(s => s.avgPct != null);
+              const gPct = vp.length ? vp.reduce((a, s) => a + s.avgPct, 0) / vp.length : null;
+              exportRegXlsx(cmp, dl, ds, rEx, buildMemComments(cmp, dl, ds, rEx, gPct));
+            } }, '⬇ İlçe MEM Excel Raporu')
           ),
+          viewTabs,
           regOut
         );
         paintReg();
