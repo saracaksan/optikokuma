@@ -1413,7 +1413,7 @@ var AI_ROLES = ['questions', 'studentNo', 'schoolCode', 'booklet', 'name', 'surn
 var AI_TOK_ = 3000;   // çıktı belirteç sınırı; tam yerleşim (mode:'layout') isteğinde büyür
 var AI_TIERS = ['fast', 'balanced', 'best'];
 var AI_PROVIDERS = [
-  { id: 'gemini', name: 'Google (Gemini — Ücretsiz)', keyProps: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], modelProp: 'GEMINI_MODEL', defaults: { fast: 'gemini-2.5-flash-lite', balanced: 'gemini-2.5-flash', best: 'gemini-2.5-pro' } },
+  { id: 'gemini', name: 'Google (Gemini — Ücretsiz)', keyProps: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'], modelProp: 'GEMINI_MODEL', defaults: { fast: 'gemini-3.5-flash-lite', balanced: 'gemini-3.5-flash-lite', best: 'gemini-2.5-flash' } },
   { id: 'openrouter', name: 'OpenRouter (Ücretsiz)', keyProps: ['OPENROUTER_API_KEY'], modelProp: 'OPENROUTER_MODEL', base: 'https://openrouter.ai/api/v1', defaults: { fast: 'openrouter/free', balanced: 'openrouter/free', best: 'openrouter/free' } },
   { id: 'groq', name: 'Groq (Ücretsiz)', keyProps: ['GROQ_API_KEY'], modelProp: 'GROQ_MODEL', base: 'https://api.groq.com/openai/v1', defaults: { fast: 'meta-llama/llama-4-scout-17b-16e-instruct', balanced: 'meta-llama/llama-4-scout-17b-16e-instruct', best: 'meta-llama/llama-4-maverick-17b-128e-instruct' } },
   { id: 'mistral', name: 'Mistral (Ücretsiz)', keyProps: ['MISTRAL_API_KEY'], modelProp: 'MISTRAL_MODEL', base: 'https://api.mistral.ai/v1', defaults: { fast: 'mistral-small-latest', balanced: 'mistral-small-latest', best: 'pixtral-large-latest' } },
@@ -1688,7 +1688,7 @@ function aiRunAnthropic_(c, model, system, text, img, mt) {
 function aiRunGemini_(c, model, system, text, img, mt) {
   var parts = []; if (img) parts.push({ inlineData: { mimeType: mt, data: img } }); parts.push({ text: text });
   var r = aiHttp_('post', 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', { 'x-goog-api-key': c.key },
-    { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: parts }], generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' } });
+    { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: parts }], generationConfig: { maxOutputTokens: 16384, responseMimeType: 'application/json' } });
   if (!aiOk_(r)) throw aiErr_(c, r);
   var cand = r.json.candidates && r.json.candidates[0], out = '';
   ((cand && cand.content && cand.content.parts) || []).forEach(function (x) { if (x && x.text && !x.thought) out += x.text; });
@@ -1875,19 +1875,30 @@ function suggestStudentsByName_(schoolStudents, adText) {
 function aAiParseExternalPdf(u, p) {
   var cfg = aiCfg_(), any = cfg.providers.some(function (c) { return c.ok; });
   if (!any) throw fail_('Yapay zekâ anahtarı tanımlı değil. Yönetim → Yapay zekâ ekranından ücretsiz Google Gemini, OpenRouter, Groq veya Mistral anahtarı ekleyin.', 'NOAI');
+  var extractedText = String(p.text || '').trim();
   var rawData = String(p.file || p.image || '').replace(/^data:[^;]+;base64,/, '');
-  if (!/^[A-Za-z0-9+\/=]+$/.test(rawData) || rawData.length < 500) throw fail_('PDF veya görüntü verisi geçersiz.');
-  if (rawData.length > 10000000) throw fail_('Dosya çok büyük (en fazla ~7 MB).');
-  var isPdf = p.mediaType === 'application/pdf';
+  var useTextMode = extractedText.length >= 40;
+  if (!useTextMode) {
+    if (!/^[A-Za-z0-9+\/=]+$/.test(rawData) || rawData.length < 500) throw fail_('PDF metni veya görüntü verisi geçersiz.');
+    if (rawData.length > 10000000) throw fail_('Dosya çok büyük (en fazla ~7 MB).');
+  }
+  var isPdf = !useTextMode && p.mediaType === 'application/pdf';
   var mt = isPdf ? 'application/pdf' : (p.mediaType === 'image/png' ? 'image/png' : 'image/jpeg');
   throttle_('ai_u_' + trKey_(u.username).slice(0, 40) + '_' + hourKey_(), AI_USER_PER_HOUR, 3600, 'Saatlik yapay zekâ analiz sınırına ulaştınız.');
   throttle_('ai_all_' + new Date().toISOString().slice(0, 10), AI_ALL_PER_DAY, 86400, 'Günlük yapay zekâ analiz sınırına ulaşıldı.');
   var pr = aiReqPrefs_(cfg, p);
-  // PDF için Gemini varsa ilk sıraya alınır, ancak Gemini yoksa veya kotaları biterse diğer tüm aktif sağlayıcılar (OpenRouter, Groq, Mistral vb.) sırayla denenir.
   var chain = aiChain_(cfg, isPdf && !pr.provider ? 'gemini' : pr.provider, pr.tier, pr.model);
+  // Ham PDF (metin çıkarılmamışsa) yalnızca Gemini ile okunabilir; diğer sağlayıcılar (OpenRouter/Groq/Mistral) image_url içinde PDF kabul etmediği için bekleyip zaman aşımına düşer.
+  if (isPdf) {
+    var gemOnly = chain.filter(function (x) { return x.c.id === 'gemini'; });
+    if (gemOnly.length) chain = gemOnly;
+    else throw fail_('Ham PDF dosyaları doğrudan yalnızca Google Gemini ile okunabilir. OpenRouter / Groq / Mistral ile okumak için güncel dis-sinav.js (metin çıkarma) kullanın veya PDF sayfasını görsel (JPG/PNG) olarak yükleyin.', 'NOAI');
+  }
   var prompt = 'Extract the complete exam result table from this Turkish exam report. Preserve Turkish characters, student numbers, class names, D/Y/N per lesson, total D/Y/N, exam score (e.g. LGS Puanı), and ranks (Snf, Okul, İlçe, İl, Genel, %). ' +
-    (p.hint ? 'Note: ' + clean_(p.hint, 200) + ' ' : '') + 'Return valid JSON only.';
-  var res = aiTry_(chain, AI_EXT_PDF_SYSTEM_, prompt, rawData, mt, function (out) {
+    (p.hint ? 'Note: ' + clean_(p.hint, 200) + ' ' : '') + 'Return valid JSON only.' +
+    (useTextMode ? '\n\n--- PDF METNİ ---\n' + extractedText.slice(0, 90000) : '');
+  AI_TOK_ = 8192;
+  var res = aiTry_(chain, AI_EXT_PDF_SYSTEM_, prompt, useTextMode ? null : rawData, useTextMode ? '' : mt, function (out) {
     var j = aiExtractJson_(out);
     return j && Array.isArray(j.rows) ? j : null;
   });
