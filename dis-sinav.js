@@ -1,4 +1,4 @@
-/* dis-sinav.js — dış sınavlar: Excel şablonu indir, Excel/CSV yükle, satır satır gir/düzenle, sil. (Çözümleme mantığı dis-core.js'de.) */
+/* dis-sinav.js — dış sınavlar: Excel şablonu indir, Excel/CSV/PDF (Yapay Zekâ) yükle, satır satır gir/düzenle, sil. (Çözümleme mantığı dis-core.js'de.) */
 'use strict';
 
 const Dis = { list: [], loaded: false };
@@ -24,7 +24,7 @@ const dxPenaltySelect = (value, onchange) => {
   if (!near) sel.append(h('option', { value }, `Özel (${DisCore.penaltyToDiv(value)} yanlış 1 doğruyu götürür)`));
   sel.value = String(near ? near.v : value); return sel;
 };
-const dxDecode = buf => { const u = new Uint8Array(buf); let t = new TextDecoder('utf-8').decode(u); if (t.includes('�')) { try { t = new TextDecoder('windows-1254').decode(u); } catch (e) { } } return t; };
+const dxDecode = buf => { const u = new Uint8Array(buf); let t = new TextDecoder('utf-8').decode(u); if (t.includes('\uFFFD')) { try { t = new TextDecoder('windows-1254').decode(u); } catch (e) { } } return t; };
 async function dxReadFile(file) {
   const buf = await file.arrayBuffer(), u = new Uint8Array(buf.slice(0, 4));
   if (u[0] === 0x50 && u[1] === 0x4B) return XlsxLite.read(buf);                    // .xlsx (zip)
@@ -38,6 +38,80 @@ function dxReadBase64(file) {
     r.onerror = () => rej(new Error('Dosya okunamadı.'));
     r.readAsDataURL(file);
   });
+}
+
+/** pdf.js kütüphanesini hazırlar (zaten yüklüyse doğrudan kullanır, değilse CDN'den yükler). */
+function dxEnsurePdfJs() {
+  if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
+  return new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = () => {
+      if (window.pdfjsLib) {
+        try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch (e) { }
+      }
+      resolve(window.pdfjsLib || null);
+    };
+    s.onerror = () => resolve(null);
+    document.head.appendChild(s);
+  });
+}
+
+/**
+ * PDF dosyasındaki tabloyu satır düzenini (Y koordinatına göre) koruyarak tarayıcıda metne çıkarır.
+ * Metin tabanlı MEBİ / yayınevi PDF'leri bu sayede OpenRouter, Groq, Mistral ve Gemini tarafından 3-5 sn içinde okunur.
+ */
+async function dxExtractPdfText(file) {
+  try {
+    const pdfjs = await dxEnsurePdfJs();
+    if (!pdfjs) return '';
+    const buf = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+    const maxPages = Math.min(doc.numPages || 0, 25);
+    const pages = [];
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      const lines = [];
+      (tc.items || []).forEach(it => {
+        const str = String(it.str || '').trim();
+        if (!str) return;
+        const x = it.transform ? it.transform[4] : 0;
+        const y = it.transform ? it.transform[5] : 0;
+        let row = lines.find(l => Math.abs(l.y - y) <= 3.5);
+        if (!row) { row = { y, items: [] }; lines.push(row); }
+        row.items.push({ x, str });
+      });
+      lines.sort((a, b) => b.y - a.y);
+      const pageTxt = lines.map(l => l.items.sort((a, b) => a.x - b.x).map(i => i.str).join(' \t ')).join('\n');
+      if (pageTxt.trim()) pages.push(`--- SAYFA ${p} ---\n${pageTxt}`);
+    }
+    return pages.join('\n\n').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+/** Okul listesinde numarası eşleşmeyen satırlar için istemci tarafında da isim benzerliğiyle öneri üretir. */
+function dxLocalSuggestions(studentsMap, adText) {
+  const norm = s => String(s || '').toLocaleLowerCase('tr').replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g').replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c').replace(/[^a-z0-9]/g, '');
+  const qKey = norm(adText);
+  if (!qKey || qKey.length < 3 || !studentsMap || !studentsMap.size) return [];
+  const qWords = String(adText || '').toLocaleLowerCase('tr').split(/\s+/).map(norm).filter(w => w.length >= 2);
+  const scored = [];
+  studentsMap.forEach(s => {
+    const full = `${s.ad || ''} ${s.soyad || ''}`.trim(), sKey = norm(full);
+    if (!sKey) return;
+    let score = 0;
+    if (sKey === qKey) score = 100;
+    else if (sKey.includes(qKey) || qKey.includes(sKey)) score = 80;
+    else {
+      const hits = qWords.filter(w => sKey.includes(w)).length;
+      if (hits > 0) score = Math.round((hits / Math.max(1, qWords.length)) * 75);
+    }
+    if (score >= 45) scored.push({ ogrNo: String(s.ogrNo), ad: s.ad || '', soyad: s.soyad || '', sinif: String(s.sinif || ''), score });
+  });
+  return scored.sort((a, b) => b.score - a.score).slice(0, 3);
 }
 
 /* ---------------------------------------------------------------- şablon indirme */
@@ -77,9 +151,9 @@ Dis.editor = async function (opts) {
     examId: ex ? ex.examId : null, okulKodu: String(ex ? ex.okulKodu : (Sel.okul(schools, '') || opts.okulKodu || (S.user.okulKodu) || (schools[0] && schools[0].okulKodu) || '')),
     name: ex ? ex.name : '', date: ex ? ex.date : today(), kaynak: ex ? ex.kaynak : '', puanAdi: ex ? ex.config.puanAdi : pre.puanAdi, choices: ex ? ex.config.choices : 4, penalty: ex ? ex.config.penalty : pre.penalty,
     lessons: ex ? ex.config.lessons.map(l => ({ name: l.name, count: l.count, short: l.short })) : pre.lessons.map(l => ({ name: l.name, count: l.count, short: l.short })),
-    rows: [], avg: ex ? ex.config.avg : null, avgOkul: ex ? ex.config.avgOkul : null, tab: opts.tab || (ex ? 'grid' : 'upload'), students: new Map(), target: ex ? ex.examId : '', mode: ex ? 'replace' : 'merge', warnings: [], touched: {}, showRanks: false
+    rows: [], avg: ex ? ex.config.avg : null, avgOkul: ex ? ex.config.avgOkul : null, tab: opts.tab || (ex ? 'grid' : 'upload'), students: new Map(), target: ex ? ex.examId : '', mode: ex ? 'replace' : 'merge', warnings: [], tried: [], touched: {}, showRanks: false
   };
-  if (ex) { try { st.rows = (await cached('ext:' + ex.examId, 'getExternal', { examId: ex.examId })).rows.map(r => ({ ogrNo: r.ogrNo, ad: r.ad, sinif: r.sinif, sec: r.sec.map(s => s.slice()), tot: (r.tot || [null, null, null]).slice(), puan: r.puan, rk: Object.assign({}, r.rk) })); } catch (e) { toast(e.message, 'bad'); return; } }
+  if (ex) { try { st.rows = (await cached('ext:' + ex.examId, 'getExternal', { examId: ex.examId })).rows.map(r => ({ ogrNo: r.ogrNo, ad: r.ad, sinif: r.sinif, sec: r.sec.map(s => s.slice()), tot: (r.tot || [null, null, null]).slice(), puan: r.puan, rk: Object.assign({}, r.rk), suggestions: [] })); } catch (e) { toast(e.message, 'bad'); return; } }
   const el = {}; let dlg;
   const nL = () => st.lessons.length;
   const loadStudents = async () => { st.students = new Map(); (await getStudents(st.okulKodu)).forEach(s => st.students.set(normNo(s.ogrNo), s)); };
@@ -121,45 +195,77 @@ Dis.editor = async function (opts) {
       FilePick.field(el.file, { label: 'Excel / CSV dosyası seç' }),
       FilePick.field(el.pdfFile, { label: '🤖 PDF / Görsel Sonuç Listesi Oku (Yapay Zekâ)' }),
       h('button', { class: 'btn', id: 'dx-tpl', onclick: () => Dis.templateModal({ lessons: st.lessons, puanAdi: st.puanAdi, penalty: st.penalty }) }, '⬇ Hazır Excel şablonunu indir')),
-    h('p', { class: 'small muted', style: { margin: '0 0 .5rem' } }, 'Yayınevi LGS/deneme PDF sonuç listelerini doğrudan yükleyebilirsiniz (ücretsiz Google Gemini API anahtarı aistudio.google.com/apikey üzerinden alınıp Yönetim → Yapay Zekâ ekranına eklenir). Hatalı/eksik satır varsa nedeni aşağıda raporlanır.'),
+    h('p', { class: 'small muted', style: { margin: '0 0 .5rem' } }, 'MEBİ / yayınevi PDF sonuç listelerinin metni tarayıcıda hızlıca çıkarılıp tanımlı tüm ücretsiz yapay zekâlara (Gemini, OpenRouter, Groq, Mistral) döngüsel olarak gönderilir. Numarası eksik/eşleşmeyen öğrenciler için okul listesinden otomatik öneri sunulur.'),
     h('details', null, h('summary', { class: 'small' }, 'Ya da tabloyu yapıştır'), el.paste, h('div', { class: 'row end', style: { marginTop: '.4rem' } }, h('button', { class: 'btn sm', id: 'dx-parse', onclick: () => { const t = el.paste.value; if (!t.trim()) return toast('Önce tabloyu yapıştırın', 'warn'); parseInput(async () => ({ sheets: [{ name: 'Yapıştırılan', rows: parseTable(t) }] }), 'yapıştırılan tablo'); } }, 'Çözümle'))),
     summary);
 
   async function parsePdfAi(file) {
-    clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" yapay zekâ ile çözümleniyor… (Büyük PDF dosyaları 15–30 sn sürebilir)`));
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+    clear(summary).append(h('div', { class: 'alert info' }, isPdf ? `📄 "${file.name}" içinden metin çıkarılıyor…` : `🤖 "${file.name}" yapay zekâ ile çözümleniyor…`));
     try {
-      const b64 = await dxReadBase64(file);
-      const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
-      const mt = isPdf ? 'application/pdf' : (file.type === 'image/png' ? 'image/png' : 'image/jpeg');
-      const d = await api('aiParseExternalPdf', { file: b64, mediaType: mt, hint: st.name || file.name }, { timeout: 120000 });
+      let payload = { okulKodu: st.okulKodu, hint: st.name || file.name };
+      let modeTag = '';
+      if (isPdf) {
+        const extracted = await dxExtractPdfText(file);
+        if (extracted && extracted.length >= 40) {
+          payload.text = extracted;
+          modeTag = 'PDF Metin';
+          clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" metni çıkarıldı (${extracted.length} karakter). Yapay zekâ tablosu oluşturuluyor…`));
+        } else {
+          const b64 = await dxReadBase64(file);
+          payload.file = b64;
+          payload.mediaType = 'application/pdf';
+          modeTag = 'Taranmış PDF';
+          clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" taranmış PDF olarak algılandı; yapay zekâ ile okunuyor (20–60 sn sürebilir)…`));
+        }
+      } else {
+        const b64 = await dxReadBase64(file);
+        payload.file = b64;
+        payload.mediaType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        modeTag = 'Görsel';
+      }
+
+      const d = await api('aiParseExternalPdf', payload, { timeout: 120000 });
       if (d.examName && !st.touched.name) { st.name = d.examName; el.name.value = d.examName; }
       else if (!st.name) { st.name = String(file.name || '').replace(/\.[^.]+$/, ''); el.name.value = st.name; }
       if (d.date && !st.touched.date) { st.date = d.date; el.date.value = d.date; }
       if (d.kaynak && !st.touched.kaynak) { st.kaynak = d.kaynak; el.kaynak.value = d.kaynak; }
       if (d.puanAdi && !st.touched.puan) { st.puanAdi = d.puanAdi; el.puan.value = d.puanAdi; }
       const lessons = (d.lessons || []).map(l => ({ name: l.name, count: l.count || 0, short: l.short || '' }));
-      const rows = (d.rows || []).map(r => ({
-        ogrNo: DisCore.normNo(r.ogrNo || ''),
-        ad: String(r.ad || '').trim(),
-        sinif: String(r.sinif || '').trim(),
-        sec: lessons.map((_, i) => {
-          const t = (r.sec && r.sec[i]) || [];
-          return [DisCore.num(t[0]), DisCore.num(t[1]), DisCore.num(t[2])];
-        }),
-        tot: r.tot ? [DisCore.num(r.tot[0]), DisCore.num(r.tot[1]), DisCore.num(r.tot[2])] : [null, null, null],
-        puan: DisCore.num(r.puan),
-        rk: r.rk || {}
-      }));
+      const rows = (d.rows || []).map(r => {
+        const no = DisCore.normNo(r.ogrNo || '');
+        const ad = String(r.ad || '').trim();
+        const srvSugg = Array.isArray(r.suggestions) ? r.suggestions : [];
+        const sugg = srvSugg.length ? srvSugg : ((!no || !st.students.has(normNo(no))) ? dxLocalSuggestions(st.students, ad) : []);
+        return {
+          ogrNo: no,
+          ad,
+          sinif: String(r.sinif || '').trim(),
+          sec: lessons.map((_, i) => {
+            const t = (r.sec && r.sec[i]) || [];
+            return [DisCore.num(t[0]), DisCore.num(t[1]), DisCore.num(t[2])];
+          }),
+          tot: r.tot ? [DisCore.num(r.tot[0]), DisCore.num(r.tot[1]), DisCore.num(r.tot[2])] : [null, null, null],
+          puan: DisCore.num(r.puan),
+          rk: r.rk || {},
+          suggestions: sugg
+        };
+      });
       const p = { lessons, rows, avg: d.avg || null, avgOkul: d.avgOkul || null };
       DisCore.complete(p, st.penalty);
       st.lessons = p.lessons; st.rows = p.rows; st.avg = p.avg; st.avgOkul = p.avgOkul;
       st.warnings = [].concat(d.errors || [], d.warnings || []);
-      st.fileLabel = `${file.name} (${d.providerName || 'Yapay Zekâ'} · ${d.model || ''})`;
+      st.tried = Array.isArray(d.tried) ? d.tried : [];
+      st.fileLabel = `${file.name} (${modeTag} · ${d.providerName || 'Yapay Zekâ'}${d.keyIndex ? ' #' + d.keyIndex : ''} · ${d.model || ''})`;
       drawSummary(); drawLessonBox();
       if (!st.rows.length) summary.append(h('div', { class: 'alert bad' }, 'PDF içinden geçerli öğrenci satırı çıkarılamadı. Dosyanın okunaklı olduğundan emin olun.'));
       else toast(`PDF okundu: ${st.rows.length} öğrenci (${st.warnings.length} uyarı)`, st.warnings.length ? 'warn' : 'ok');
     } catch (e) {
-      clear(summary).append(h('div', { class: 'alert bad' }, 'PDF okuma hatası: ' + (e.message || e)));
+      const rawMsg = String((e && e.message) || e || '');
+      const friendly = /aborted|AbortError/i.test(rawMsg)
+        ? 'İstek zaman aşımına uğradı (120 sn). PDF çok büyükse birkaç sayfaya bölerek yükleyin veya Yönetim → Yapay Zekâ ekranında çalışan ücretsiz sağlayıcıları (OpenRouter / Groq / Gemini) kontrol edin.'
+        : rawMsg;
+      clear(summary).append(h('div', { class: 'alert bad' }, 'PDF okuma hatası: ' + friendly));
     }
   }
 
@@ -176,22 +282,57 @@ Dis.editor = async function (opts) {
     if (e.penalty != null && !st.touched.pen) { st.penalty = e.penalty; drawPen(); }
     if (e.choices) st.choices = e.choices;
     DisCore.complete(p, st.penalty);
-    st.lessons = p.lessons.map(l => ({ name: l.name, count: l.count, short: l.short, guessed: l.guessed })); st.rows = p.rows; st.avg = p.avg; st.avgOkul = p.avgOkul; st.warnings = res.warnings.slice(); st.fileLabel = label;
+    p.rows.forEach(r => { r.suggestions = (!r.ogrNo || !st.students.has(normNo(r.ogrNo))) ? dxLocalSuggestions(st.students, r.ad) : []; });
+    st.lessons = p.lessons.map(l => ({ name: l.name, count: l.count, short: l.short, guessed: l.guessed })); st.rows = p.rows; st.avg = p.avg; st.avgOkul = p.avgOkul; st.warnings = res.warnings.slice(); st.tried = []; st.fileLabel = label;
     drawSummary(); drawLessonBox();
   }
   function matchInfo() {
     let known = 0; const miss = []; st.rows.forEach(r => { if (st.students.has(normNo(r.ogrNo))) known++; else miss.push(r); }); return { known, miss };
   }
+  function applySuggestion(r, s) {
+    r.ogrNo = DisCore.normNo(s.ogrNo);
+    r.ad = `${s.ad || ''} ${s.soyad || ''}`.trim() || r.ad;
+    if (s.sinif) r.sinif = String(s.sinif);
+    r.suggestions = [];
+    drawSummary();
+    if (st.tab === 'grid') drawGrid();
+  }
   function drawSummary() {
     clear(summary); if (!st.rows.length) return;
     const { known, miss } = matchInfo(), school = schoolByCode(st.okulKodu);
+    const withSugg = miss.filter(r => r.suggestions && r.suggestions.length);
+    const suggBox = withSugg.length ? h('div', { class: 'card', style: { marginTop: '.55rem', background: 'var(--bg-soft, #f8fafc)', border: '1px solid var(--line)' } },
+      h('div', { class: 'row between' },
+        h('b', { class: 'small' }, `Okul Listesinden Önerilen Eşleştirmeler (${withSugg.length})`),
+        h('button', { class: 'btn sm primary', onclick: () => {
+          let applied = 0;
+          withSugg.forEach(r => { if (r.suggestions && r.suggestions[0] && r.suggestions[0].score >= 70) { applySuggestion(r, r.suggestions[0]); applied++; } });
+          toast(applied ? `${applied} öğrenci okul listesiyle eşleştirildi` : 'Yüksek güvenilirlikli (%70+) öneri yok; aşağıdan tek tek seçebilirsiniz', applied ? 'ok' : 'warn');
+        } }, 'Yüksek eşleşmeleri uygula (%70+)')
+      ),
+      h('div', { class: 'small muted', style: { margin: '.25rem 0 .45rem' } }, 'Numarası eksik veya okul listesinde eşleşmeyen öğrenciler için en yakın isimler önerildi. Tıklayarak hemen uygulayabilirsiniz:'),
+      withSugg.slice(0, 30).map(r => h('div', { class: 'row', style: { marginBottom: '.35rem', gap: '.35rem', alignItems: 'center' } },
+        h('span', { class: 'small' }, h('b', null, r.ad || '(adsız)'), ' ', h('span', { class: 'muted mono' }, `[No: ${r.ogrNo || 'yok'}]`), ' →'),
+        r.suggestions.map(s => h('button', { class: 'btn sm', onclick: () => { applySuggestion(r, s); toast(`${s.ogrNo} ${s.ad} ${s.soyad} eşleştirildi`, 'ok'); } }, `✓ ${s.ogrNo} · ${s.ad} ${s.soyad}${s.sinif ? ' (' + s.sinif + ')' : ''} [%${s.score}]`))
+      ))
+    ) : null;
+
+    const triedBox = st.tried && st.tried.length > 1 ? h('details', { style: { marginTop: '.45rem' } },
+      h('summary', { class: 'small muted' }, `Yapay zekâ geçiş günlüğü (${st.tried.length} deneme)`),
+      h('div', { class: 'small', style: { marginTop: '.25rem' } }, st.tried.map(t =>
+        h('div', null, `${t.ok ? '✓' : '✕'} ${t.providerName || t.provider} #${t.keyIndex || 1} (${t.model || '–'}): ${t.ok ? `Başarılı (${t.ms} ms)` : `[${t.code || 'HATA'}] ${t.reason || ''}`}`)
+      ))
+    ) : null;
+
     summary.append(h('div', { class: 'card', style: { marginTop: '.8rem', marginBottom: 0 } },
       h('div', { class: 'row' }, h('b', null, `${st.rows.length} öğrenci`), h('span', { class: 'pill brand' }, `${nL()} ders`), st.avg ? h('span', { class: 'pill' }, 'Genel ortalama var') : null, st.avgOkul ? h('span', { class: 'pill' }, 'Okul ortalaması var') : null, st.fileLabel ? h('span', { class: 'small muted' }, st.fileLabel) : null),
       h('div', { class: 'small', style: { margin: '.4rem 0' } }, st.lessons.map(l => `${l.name} (${l.count}${l.guessed ? '?' : ''})`).join(' · ')),
       st.lessons.some(l => l.guessed) ? h('div', { class: 'small muted' }, '? = soru sayısı dosyada yok; en yüksek D+Y değerinden tahmin edildi. "Satır satır / düzenle" sekmesinde düzeltebilirsiniz.') : null,
-      st.students.size ? h('div', { class: 'alert ' + (miss.length ? 'warn' : 'ok'), id: 'dx-match' }, `${known} öğrenci ${school ? school.okulAdi : 'okul'} öğrenci listesindeki numaralarla eşleşti` + (miss.length ? `; ${miss.length} öğrenci listede yok (${miss.slice(0, 5).map(r => r.ogrNo).join(', ')}${miss.length > 5 ? '…' : ''}). Yine de eklenir; analizde dosyadaki adıyla görünür.` : '.'))
+      st.students.size ? h('div', { class: 'alert ' + (miss.length ? 'warn' : 'ok'), id: 'dx-match' }, `${known} öğrenci ${school ? school.okulAdi : 'okul'} öğrenci listesindeki numaralarla eşleşti` + (miss.length ? `; ${miss.length} öğrenci listede yok (${miss.slice(0, 5).map(r => r.ogrNo || r.ad).join(', ')}${miss.length > 5 ? '…' : ''}). Yine de eklenir; analizde dosyadaki adıyla görünür.` : '.'))
         : h('div', { class: 'alert info' }, 'Bu okulun öğrenci listesi boş; öğrenciler dosyadaki ad ve sınıfla eklenir.'),
-      st.warnings.map(w => h('div', { class: 'alert warn' }, w)),
+      suggBox,
+      triedBox,
+      st.warnings.slice(0, 20).map(w => h('div', { class: 'alert warn' }, w)),
       h('div', { class: 'small muted' }, 'Kontrol etmek/düzeltmek için "Satır satır / düzenle" sekmesine bakın; hazırsanız "Kaydet ve aktar".')));
   }
 
@@ -203,7 +344,7 @@ Dis.editor = async function (opts) {
     r.sec.forEach(s => { if (s[0] != null || s[1] != null) s[2] = DisCore.r2((s[0] || 0) - (s[1] || 0) * st.penalty); tD += s[0] || 0; tY += s[1] || 0; tN += s[2] || 0; });
     r.tot = [tD, tY, DisCore.r2(tN)];
   }
-  const blankRow = () => ({ ogrNo: '', ad: '', sinif: '', sec: st.lessons.map(() => [null, null, null]), tot: [0, 0, 0], puan: null, rk: {} });
+  const blankRow = () => ({ ogrNo: '', ad: '', sinif: '', sec: st.lessons.map(() => [null, null, null]), tot: [0, 0, 0], puan: null, rk: {}, suggestions: [] });
   function drawGrid() {
     clear(gridHold); const L = st.lessons, MAX = 300, rows = st.rows.slice(0, MAX), refs = [];
     const inp = (v, cb, w, extra) => h('input', Object.assign({ type: 'text', value: v == null ? '' : v, style: { width: w || '3.4rem', minHeight: '30px', padding: '.2rem .3rem', textAlign: extra && extra.left ? 'left' : 'right' }, onchange: e => cb(e.target.value, e.target) }, extra && extra.attrs));
@@ -213,10 +354,13 @@ Dis.editor = async function (opts) {
     rows.forEach((r, ri) => {
       const ref = {}; refs[ri] = ref; const upd = () => { L.forEach((l, li) => { ref['n' + li].textContent = nf(r.sec[li][2]); }); ref.tD.textContent = nf(r.tot[0]); ref.tY.textContent = nf(r.tot[1]); ref.tN.textContent = nf(r.tot[2]); };
       const numCell = (get, set, w) => h('td', null, inp(get(), (v, t) => { const n = DisCore.num(v); set(n); t.value = n == null ? '' : n; }, w));
+      const topSugg = (!r.ogrNo || !st.students.has(normNo(r.ogrNo))) && r.suggestions && r.suggestions[0] ? r.suggestions[0] : null;
       const tr = h('tr', null,
         h('td', { class: 'muted small' }, ri + 1),
-        h('td', null, inp(r.ogrNo, (v, t) => { r.ogrNo = DisCore.normNo(v); t.value = r.ogrNo; const s = st.students.get(normNo(r.ogrNo)); if (s) { if (!r.ad) { r.ad = (s.ad + ' ' + (s.soyad || '')).trim(); ref.ad.value = r.ad; } if (!r.sinif) { r.sinif = String(s.sinif || ''); ref.sinif.value = r.sinif; } } }, '5.2rem', { left: true, attrs: { 'data-c': 'no', inputmode: 'numeric' } })),
-        h('td', null, (ref.ad = inp(r.ad, v => { r.ad = v.trim(); }, '12rem', { left: true, attrs: { 'data-c': 'ad' } }))),
+        h('td', null, inp(r.ogrNo, (v, t) => { r.ogrNo = DisCore.normNo(v); t.value = r.ogrNo; const s = st.students.get(normNo(r.ogrNo)); if (s) { if (!r.ad) { r.ad = (s.ad + ' ' + (s.soyad || '')).trim(); ref.ad.value = r.ad; } if (!r.sinif) { r.sinif = String(s.sinif || ''); ref.sinif.value = r.sinif; } r.suggestions = []; } }, '5.2rem', { left: true, attrs: { 'data-c': 'no', inputmode: 'numeric' } })),
+        h('td', null,
+          (ref.ad = inp(r.ad, v => { r.ad = v.trim(); }, '12rem', { left: true, attrs: { 'data-c': 'ad' } })),
+          topSugg ? h('div', { style: { marginTop: '2px' } }, h('button', { type: 'button', class: 'btn sm', style: { fontSize: '11px', padding: '1px 5px' }, onclick: () => applySuggestion(r, topSugg) }, `Öneri: ${topSugg.ogrNo} ${topSugg.ad} ${topSugg.soyad}`)) : null),
         h('td', null, (ref.sinif = inp(r.sinif, v => { r.sinif = v.trim(); }, '3.6rem', { left: true, attrs: { 'data-c': 'sinif' } }))),
         L.map((l, li) => [
           h('td', { style: { borderLeft: '1px solid var(--line)' } }, inp(r.sec[li][0], (v, t) => { const n = DisCore.num(v); r.sec[li][0] = n; t.value = n == null ? '' : n; recalc(r); upd(); }, '3rem', { attrs: { 'data-c': 'd' + li, inputmode: 'numeric' } })),
@@ -235,7 +379,7 @@ Dis.editor = async function (opts) {
         h('label', { class: 'small row', style: { gap: '.3rem' } }, h('input', { type: 'checkbox', id: 'dx-ranks', checked: st.showRanks, style: { width: 'auto', minHeight: 0 }, onchange: e => { st.showRanks = e.target.checked; drawGrid(); } }), 'Dereceleri de gir (Snf/Okul/İlçe/İl/Genel)'),
         h('span', { class: 'grow' }), h('span', { class: 'small muted' }, `${st.rows.length} satır`), st.rows.length ? h('button', { class: 'btn ghost sm', onclick: async () => { if (await confirmBox('Tablodaki tüm satırlar silinsin mi?', 'Sil', true)) { st.rows = []; drawGrid(); drawSummary(); } } }, 'Temizle') : null),
       h('div', { class: 'small muted', style: { marginBottom: '.4rem' } }, 'D ve Y\'yi girin; Net ve Toplam otomatik hesaplanır. Ö.No öğrenci listesindeyse ad ve sınıf otomatik gelir. Enter bir alt satıra geçer.'),
-      st.rows.length ? h('div', { class: 'tablewrap', style: { maxHeight: '48vh' } }, h('table', { class: 'dx-grid zebra-tbl' }, thead, tbody)) : h('div', { class: 'empty card' }, 'Henüz satır yok. "+ Öğrenci satırı ekle" ile başlayın ya da Excel/CSV yükleyin.'),
+      st.rows.length ? h('div', { class: 'tablewrap', style: { maxHeight: '48vh' } }, h('table', { class: 'dx-grid zebra-tbl' }, thead, tbody)) : h('div', { class: 'empty card' }, 'Henüz satır yok. "+ Öğrenci satırı ekle" ile başlayın ya da Excel/CSV/PDF yükleyin.'),
       st.rows.length > MAX ? h('div', { class: 'small muted' }, `Ekranda ilk ${MAX} satır düzenlenebilir; ${st.rows.length} satırın tamamı kaydedilir.`) : null);
   }
   const gridPane = h('div', null, h('div', { class: 'field', style: { marginBottom: '.6rem' } }, h('label', null, 'Dersler ve soru sayıları'), lessonHold), gridHold); drawLessonBox();
