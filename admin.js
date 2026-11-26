@@ -3,7 +3,6 @@
 
 const AD = { tab: 'schools' };
 const deTR = s => String(s || '').toLocaleLowerCase('tr').replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g').replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c').replace(/[^a-z0-9]/g, '');
-
 /** Başlık satırı varsa sütunları adından, yoksa sırayla eşler. fields: {anahtar: [takma adlar]} */
 function mapTable(table, fields) {
   if (!table.length) return [];
@@ -25,24 +24,8 @@ App.views.admin = function (root) {
   if (!tabs.some(t => t[0] === AD.tab)) AD.tab = tabs[0][0];
   const tb = h('div', { class: 'tabs' }), pane = h('div');
   const lab = (id, l) => id === 'apps' && App.state.pending ? [l, h('span', { class: 'badge', style: { position: 'static', marginLeft: '.4rem', display: 'inline-block' } }, App.state.pending)] : l;
-  const waFallback = p => p.append(h('div', { class: 'alert warn' }, 'Veli WhatsApp modülü (wa.js) yüklü değil.'));
-  const draw = () => {
-    clear(tb).append(...tabs.map(([id, l]) => h('button', { id: 'ad-tab-' + id, class: AD.tab === id ? 'active' : '', onclick: () => { AD.tab = id; draw(); } }, lab(id, l))));
-    clear(pane);
-    const handlers = {
-      region: regionTab,
-      schools: schoolsTab,
-      students: studentsTab,
-      users: usersTab,
-      wa: typeof waTab === 'function' ? waTab : waFallback,
-      apps: appsTab,
-      ai: aiTab
-    };
-    handlers[AD.tab](pane);
-  };
-  root.append(h('h1', null, 'Yönetim'), tb, pane);
-  draw();
-  App.refreshPending && App.refreshPending();
+  const draw = () => { clear(tb).append(...tabs.map(([id, l]) => h('button', { id: 'ad-tab-' + id, class: AD.tab === id ? 'active' : '', onclick: () => { AD.tab = id; draw(); } }, lab(id, l)))); clear(pane); ({ region: regionTab, schools: schoolsTab, students: studentsTab, users: usersTab, wa: waTab, apps: appsTab, ai: aiTab })[AD.tab](pane); };
+  root.append(h('h1', null, 'Yönetim'), tb, pane); draw(); App.refreshPending && App.refreshPending();
 };
 
 /** Yapıştır / dosyadan yükle kutusu */
@@ -53,6 +36,7 @@ function importBox(hint, onImport) {
   } }, 'Yükle'), h('button', { class: 'btn', onclick: () => fi.click() }, 'CSV dosyası seç'), fi), out);
 }
 
+
 /** İlçe / İl Yönetim Paneli: tüm okulları tek panelden inceleme, ortak sınav ve ders ortalamaları, okula geçip müdür yetkisiyle inceleme. */
 function regionTab(pane) {
   const S = App.state, u = S.user, box = h('div');
@@ -60,6 +44,7 @@ function regionTab(pane) {
   const ilOpts = Array.from(new Set(allSc.map(s => s.il).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'));
   let selIl = u.role === 'il' || u.role === 'ilce' ? u.il : (Sel.v.il || '');
   let selIlce = u.role === 'ilce' ? u.ilce : (Sel.v.ilce || '');
+  let selExam = '';
   let cachedData = null;
 
   const ilSel = h('select', { disabled: u.role === 'il' || u.role === 'ilce', onchange: e => { selIl = e.target.value; selIlce = ''; fillIlce(); loadReg(); } },
@@ -76,7 +61,7 @@ function regionTab(pane) {
   }
   fillIlce();
 
-  const examSel = h('select', { onchange: () => renderReg() });
+  const examSel = h('select', { onchange: e => { selExam = e.target.value; renderReg(); } });
   const refreshBtn = h('button', { class: 'btn', onclick: () => loadReg(true) }, '↻ Güncelle');
 
   pane.append(
@@ -116,10 +101,6 @@ function regionTab(pane) {
 
     const activeExam = examSel.value ? exams.find(ex => ex.examId === examSel.value) : null;
     const rows = activeExam ? activeExam.schools : (d.schools || []);
-    const validNetRows = rows.filter(x => x.avgNet != null);
-    const generalAvgNet = validNetRows.length
-      ? nf(validNetRows.reduce((a, x) => a + x.avgNet, 0) / validNetRows.length, 2)
-      : '–';
     const allDersler = Array.from(new Set(rows.flatMap(r => activeExam ? (r.sections || []).map(s => s.name) : Object.keys(r.dersOrt || {}))));
 
     const kpiRow = h('div', { class: 'card' },
@@ -127,7 +108,7 @@ function regionTab(pane) {
         h('div', { class: 'stat' }, h('b', null, d.schoolCount || 0), h('span', null, 'kapsamdaki okul')),
         h('div', { class: 'stat' }, h('b', null, d.totalStudents || 0), h('span', null, 'kayıtlı öğrenci')),
         h('div', { class: 'stat' }, h('b', null, exams.length), h('span', null, 'sonuçlanan sınav')),
-        h('div', { class: 'stat' }, h('b', null, activeExam ? nf(activeExam.avgNet, 2) : generalAvgNet), h('span', null, activeExam ? `${activeExam.name} ort. net` : 'okullar ort. net'))
+        h('div', { class: 'stat' }, h('b', null, activeExam ? nf(activeExam.avgNet, 2) : (rows.length ? nf(rows.reduce((a, x) => a + (x.avgNet || 0), 0) / rows.length, 2) : '–')), h('span', null, activeExam ? `${activeExam.name} ort. net` : 'okullar ort. net'))
       )
     );
 
@@ -213,7 +194,6 @@ async function getStudentsTel(code) {
   try { return (await api('listStudents', { okulKodu: String(code), tel: true })).students || []; }
   catch (e) { return getStudents(code); }
 }
-
 /** 905321112233 → 0532 111 22 33 (gösterim); başka biçimler +ülkekodu ile. */
 function telShow(n) {
   n = String(n || ''); if (!n) return '';
@@ -260,7 +240,6 @@ function schoolForm(sch, onDone) {
       catch (e) { err.append(h('div', { class: 'alert bad' }, e.message)); return false; }
     } }] });
 }
-
 async function deleteSchool(sch, onDone) {
   const n = (await getStudents(sch.okulKodu)).length;
   if (!(await confirmBox(`"${sch.okulAdi}" (${sch.okulKodu}) okulu${n ? ` ve ${n} öğrencilik listesi` : ''} silinsin mi? Daha önce okutulan sınav sonuçları silinmez ama okul adı yerine kodu görünür. Bu işlem geri alınamaz.`, 'Okulu sil', true))) return;
@@ -282,7 +261,6 @@ function studentForm(code, stu, onDone) {
       catch (e) { err.append(h('div', { class: 'alert bad' }, e.message)); return false; }
     } }] });
 }
-
 /** Seçmeli öğrenci tablosu: arama, sınıf süzgeci, tekli/çoklu silme. onChange: liste değişince yeniden yükleme. */
 function studentManager(code, students, onChange) {
   const box = h('div'), q = h('input', { type: 'search', id: 'st-q', placeholder: 'Ad, soyad veya numara ara…' }), cls = h('select', { id: 'st-cls' }, h('option', { value: '' }, 'Tüm sınıflar'), ...Array.from(new Set(students.map(x => x.sinif).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'tr', { numeric: true })).map(c => h('option', { value: c }, c)));
@@ -389,19 +367,19 @@ function appsTab(pane) {
   load();
 }
 
+
 /* ------------------------------------------------------------------ yapay zekâ ayarları (yalnızca sistem yöneticisi)
-- Anahtarlar yalnızca sunucuda (Apps Script Betik Özellikleri) durur: bu ekran onları yazar ama geri okuyamaz (maskeli ipucu görünür).
-- Model alanı boşsa sunucu sağlayıcının güncel model listesini çeker ve seçilen seviyenin (hızlı / dengeli / en yetenekli) en yeni modelini kullanır. */
+ * Anahtarlar yalnızca sunucuda (Apps Script Betik Özellikleri) durur: bu ekran onları yazar ama geri okuyamaz (maskeli ipucu görünür).
+ * Model alanı boşsa sunucu sağlayıcının güncel model listesini çeker ve seçilen seviyenin (hızlı / dengeli / en yetenekli) en yeni modelini kullanır. */
+/** OpenAI uyumlu, ücretsiz katmanı olan hizmetler için hazır doldurma (model adları değişebilir; "Dene" ile doğrulanır). */
 const COMPAT_PRESETS = [
   { id: 'groq', name: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'meta-llama/llama-4-scout-17b-16e-instruct', tip: 'console.groq.com: ücretsiz anahtar, dakikalık/günlük sınırlı' },
   { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', model: 'openrouter/free', tip: 'openrouter.ai: ücretsiz modeller yönlendirici; günlük istek sınırı düşük' },
   { id: 'mistral', name: 'Mistral', url: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', tip: 'console.mistral.ai: ücretsiz "Experiment" katmanı' }
 ];
-
 function aiTab(pane) {
   const box = h('div', { id: 'ai-box' }); pane.append(box);
-  const TIER_L = { auto: 'Otomatik (dengeli)', fast: 'Hızlı', balanced: 'Dengeli', best: 'En yetenekli' };
-  const SRC_L = { list: 'sağlayıcının güncel model listesi', default: 'yerleşik varsayılan (liste alınamadı)', manual: 'elle girilmiş model', none: '' };
+  const TIER_L = { auto: 'Otomatik (dengeli)', fast: 'Hızlı', balanced: 'Dengeli', best: 'En yetenekli' }, SRC_L = { list: 'sağlayıcının güncel model listesi', default: 'yerleşik varsayılan (liste alınamadı)', manual: 'elle girilmiş model', none: '' };
   let st = null, d = null;
   const fresh = s0 => ({
     provider: s0.config.provider || 'auto',
@@ -412,7 +390,6 @@ function aiTab(pane) {
     compatUrl: s0.config.compatUrl || '',
     compatName: s0.config.compatName || ''
   });
-
   async function load(refresh) {
     clear(box).append(h('p', { class: 'muted' }, refresh ? 'Sağlayıcıların model listeleri ve anahtarları yeniden taranıyor…' : 'Yükleniyor…'));
     try { st = await api('aiStatus', refresh ? { refresh: true } : {}); d = fresh(st); draw(); } catch (e) { clear(box).append(h('div', { class: 'alert bad' }, e.message)); }
@@ -448,14 +425,8 @@ function aiTab(pane) {
       placeholder: hint && !cleared
         ? 'Yeni anahtar(lar) eklemek/değiştirmek için satır satır yapıştırın'
         : 'Bir veya birden çok API anahtarını alt alta / virgülle yapıştırın (kota dolunca sıradakine geçer)',
-      oninput: e => {
-        d.keys[o.id] = e.target.value;
-        if (e.target.value.trim() && d.clear.includes(o.id)) {
-          d.clear = d.clear.filter(x => x !== o.id);
-        }
-      }
+      oninput: e => { d.keys[o.id] = e.target.value; }
     });
-    keyIn.value = d.keys[o.id] || '';
     const mdl = h('input', { type: 'text', id: 'ai-model-' + o.id, value: d.models[o.id] || '', placeholder: isC ? 'Zorunlu: model adı' : 'otomatik (en yeni)', autocomplete: 'off', oninput: e => { d.models[o.id] = e.target.value.trim(); } });
     const testBtn = h('button', { class: 'btn sm', id: 'ai-test-' + o.id, onclick: async ev => {
       const b = ev.currentTarget; b.disabled = true; clear(out).append(h('span', { class: 'muted small' }, 'Döngüsel test yapılıyor…'));
@@ -469,7 +440,6 @@ function aiTab(pane) {
       }
       b.disabled = false;
     } }, 'Dene & Yedekleri Göster');
-
     return h('div', { class: 'card', 'data-prov': o.id },
       h('div', { class: 'row between' },
         h('h3', { style: { margin: 0 } }, o.name),
@@ -482,30 +452,16 @@ function aiTab(pane) {
       isC ? h('div', { class: 'small', style: { marginTop: '.3rem' } }, h('span', { class: 'muted' }, 'Hazır doldur: '), ...COMPAT_PRESETS.map(pr => h('button', { class: 'btn sm', id: 'ai-preset-' + pr.id, type: 'button', title: pr.tip, style: { marginRight: '.25rem' }, onclick: () => { d.compatUrl = pr.url; d.compatName = pr.name; d.models.compat = pr.model; draw(); } }, pr.name))) : null,
       o.ok ? h('div', { class: 'small', style: { marginTop: '.4rem' } }, h('b', null, 'Seçilen modeller: '), ['fast', 'balanced', 'best'].map(t => `${TIER_L[t]}: ${o.models[t] || '—'}`).join(' · '), o.source !== 'none' ? h('span', { class: 'muted' }, ` — kaynak: ${SRC_L[o.source] || o.source}`) : null) : null,
       o.ok && o.listError ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, 'Model listesi alınamadı: ' + o.listError) : null,
-      h('div', { class: 'row', style: { marginTop: '.5rem' } },
-        o.ok ? testBtn : null,
-        hint && !cleared ? h('button', { class: 'btn sm danger', id: 'ai-clear-' + o.id, onclick: () => { if (!d.clear.includes(o.id)) d.clear.push(o.id); delete d.keys[o.id]; draw(); } }, 'Anahtarları sil') : null,
-        cleared ? h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'Kaydedince anahtarlar silinir.') : null
-      ),
-      out
-    );
+      h('div', { class: 'row', style: { marginTop: '.5rem' } }, o.ok ? testBtn : null, hint && !cleared ? h('button', { class: 'btn sm danger', id: 'ai-clear-' + o.id, onclick: () => { d.clear.push(o.id); delete d.keys[o.id]; draw(); } }, 'Anahtarları sil') : null, cleared ? h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'Kaydedince anahtarlar silinir.') : null), out);
   }
-
   async function save(btn) {
     btn.disabled = true;
     try {
       const keys = {}; Object.keys(d.keys).forEach(k => { if (d.keys[k].trim()) keys[k] = d.keys[k].trim(); });
       const clearKeys = d.clear.filter(k => !keys[k]), models = {}; st.providers.forEach(o => { models[o.id] = d.models[o.id] || ''; });
-      st = await api('aiSaveConfig', { provider: d.provider, tier: d.tier, models, keys, clearKeys, compatUrl: d.compatUrl, compatName: d.compatName }, { timeout: 120000 });
-      d = fresh(st);
-      toast('Yapay zekâ ayarları kaydedildi', 'ok');
-      draw();
-    } catch (e) {
-      toast(e.message, 'bad', 8000);
-      btn.disabled = false;
-    }
+      st = await api('aiSaveConfig', { provider: d.provider, tier: d.tier, models, keys, clearKeys, compatUrl: d.compatUrl, compatName: d.compatName }, { timeout: 120000 }); d = fresh(st); toast('Yapay zekâ ayarları kaydedildi', 'ok'); draw();
+    } catch (e) { toast(e.message, 'bad', 8000); btn.disabled = false; }
   }
-
   function draw() {
     clear(box); const ready = st.providers.filter(o => o.ok).length;
     box.append(h('div', { class: 'card' }, h('h2', null, 'Yapay zekâ çoklu sağlayıcı ve döngüsel yedekleme'),
@@ -516,6 +472,5 @@ function aiTab(pane) {
       h('div', { class: 'row', style: { marginTop: '.4rem' } }, h('button', { class: 'btn primary', id: 'ai-save', onclick: ev => save(ev.currentTarget) }, 'Kaydet'), h('button', { class: 'btn', id: 'ai-refresh', onclick: () => load(true) }, 'Modelleri yeniden tara'), h('span', { class: 'small muted' }, `${ready} sağlayıcı hazır`))),
       ...st.providers.map(provCard));
   }
-
   load(false);
 }
