@@ -95,7 +95,7 @@ function snStudents(exams, roster) {
     const lmap = new Map();
     let took = 0;
     exams.forEach(n => {
-      const r = (anRows(n) || []).find(x => String(x.ogrNo) === String(no));
+      const r = (anRows(n) || []).find(x => normNo(x.no || x.ogrNo) === normNo(no));
       if (!r) { pct.push(null); nets.push(null); puans.push(null); return; }
       took++;
       const p = ogPct(r.net, n.totalQ);

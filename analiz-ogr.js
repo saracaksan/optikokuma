@@ -1,17 +1,201 @@
-/* analiz-ogr.js — Öğrenci sekmesi ve kazanım/konu bazlı otomatik eylem planı (Sıraç Aksan Optik Okuma) */
+/* analiz-ogr.js — Öğrenci Analizi sekmesi, ortak og* yardımcıları ve Kişiye Özel Konu/Kazanım Eylem Planı
+ * Sıraç Aksan Optik Okuma · Telif Hakkı © Sıraç AKSAN (İzinsiz kopyalamak, dağıtmak veya telif atmak ayıptır.)
+ * Yardımcılar (ogSorted, ogRoster, ogModel, ogFind, ogMean, ogPct, ogP, ogSgn, ogSlope, ogTrendWord, ogLbl, ogSub, ogFull, ogStat, ogNotes, ogN2, ogHd, ogDownload, ogSeg)
+ * analiz-sinif.js, analiz-okul.js ve analiz-karne.js tarafından paylaşılır.
+ */
 'use strict';
 
-/**
- * Seçili sınavların kazanımlarını ve öğrencinin yanlış/boş sorularını analiz ederek
- * kişiye özel Konu / Kazanım Eylem Planı üretir.
- */
+/* ================================================================ ORTAK YARDIMCILAR (og*) */
+const ogSorted = sel => (sel || []).slice().sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || String(a.name || '').localeCompare(String(b.name || ''), 'tr'));
+const ogMean = arr => { const v = (arr || []).filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + Number(b), 0) / v.length : null; };
+const ogPct = (net, totalQ) => (net != null && isFinite(net) && totalQ > 0) ? Math.max(0, Math.min(100, (Number(net) / Number(totalQ)) * 100)) : null;
+const ogP = v => (v == null || !isFinite(v)) ? '–' : '%' + nf(v, 1);
+const ogSgn = (v, d = 1, unit = '') => (v == null || !isFinite(v)) ? '' : `${v > 0 ? '+' : ''}${nf(v, d)}${unit}`;
+const ogN2 = v => (v == null || !isFinite(v)) ? null : { v: Math.round(Number(v) * 100) / 100, s: 'n2' };
+const ogHd = cols => (cols || []).map(x => ({ v: x, s: 'h' }));
+const ogByName = (a, b) => String(a.ad || '').localeCompare(String(b.ad || ''), 'tr') || String(a.no || '').localeCompare(String(b.no || ''), undefined, { numeric: true });
+
+function ogSlope(arr) {
+  const pts = [];
+  (arr || []).forEach((v, i) => { if (v != null && isFinite(v)) pts.push([i, Number(v)]); });
+  if (pts.length < 2) return null;
+  const n = pts.length, mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n;
+  let num = 0, den = 0;
+  pts.forEach(([x, y]) => { num += (x - mx) * (y - my); den += (x - mx) * (x - mx); });
+  return den ? num / den : 0;
+}
+
+function ogTrendWord(sl) {
+  if (sl == null || !isFinite(sl)) return 'tek sınav';
+  if (sl >= 2.5) return 'güçlü yükseliş';
+  if (sl >= 0.6) return 'yükseliş eğilimi';
+  if (sl <= -2.5) return 'belirgin düşüş';
+  if (sl <= -0.6) return 'düşüş eğilimi';
+  return 'dengeli seyir';
+}
+
+const ogLbl = exams => (exams || []).map(n => { const s = String(n.name || ''); return s.length > 14 ? s.slice(0, 13) + '…' : s; });
+const ogSub = exams => (exams || []).map(n => anFmtDate(n.date).slice(0, 5));
+const ogFull = exams => (exams || []).map(n => `${n.name || ''}${n.date ? ' (' + anFmtDate(n.date) + ')' : ''}`);
+const ogStat = (v, l, sub) => h('div', { class: 'stat' }, h('b', null, v == null || v === '' ? '–' : v), h('span', null, l), sub ? h('small', { class: 'muted' }, sub) : null);
+
+function ogSeg(items, val, onChange) {
+  return h('div', { class: 'seg' }, (items || []).map(([id, lbl]) =>
+    h('button', { type: 'button', class: 'btn sm' + (val === id ? ' primary' : ''), onclick: () => onChange(id) }, lbl)
+  ));
+}
+
+function ogDownload(filename, sheets) {
+  if (typeof XlsxLite !== 'undefined' && XlsxLite.write) {
+    download(filename, XlsxLite.write(sheets), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    toast('Excel indirildi', 'ok');
+  } else {
+    toast('Excel kütüphanesi (xlsx-lite.js) bulunamadı.', 'bad');
+  }
+}
+
+/** Okul öğrenci listesi + seçili sınavlardaki tüm öğrencileri tek haritada toplar (key = normNo). */
+function ogRoster(exams) {
+  const m = new Map();
+  const cachedNames = AN.names && AN.names.get(String(AN.okul));
+  if (cachedNames) {
+    cachedNames.forEach((s, no) => {
+      const k = normNo(no);
+      m.set(k, { no: k, ad: `${s.ad || ''} ${s.soyad || ''}`.trim(), sinif: String(s.sinif || '') });
+    });
+  }
+  (exams || []).forEach(n => {
+    (anRows(n) || []).forEach(r => {
+      const k = normNo(r.no || r.ogrNo);
+      if (!k) return;
+      const cur = m.get(k) || { no: k, ad: '', sinif: '' };
+      if (!cur.ad && r.ad) cur.ad = String(r.ad).trim();
+      if (!cur.sinif && r.sinif) cur.sinif = String(r.sinif).trim();
+      m.set(k, cur);
+    });
+  });
+  return m;
+}
+
+function ogFind(roster, q) {
+  const t = String(q || '').trim().toLocaleLowerCase('tr');
+  const all = Array.from(roster.values()).sort(ogByName);
+  if (!t) return all.slice(0, 40);
+  return all.filter(s => `${s.no} ${s.ad} ${s.sinif}`.toLocaleLowerCase('tr').includes(t)).slice(0, 40);
+}
+
+/** Tek öğrenci için tüm seçili sınavların ve derslerin ayrıntılı analiz modelini üretir. */
+function ogModel(stuNo, exams, roster) {
+  const no = normNo(stuNo);
+  const info = roster.get(no) || { no, ad: '', sinif: '' };
+  const per = [];
+  const lesMap = new Map();
+  let slot = 1;
+
+  (exams || []).forEach(n => {
+    const allR = anRows(n) || [];
+    const r = allR.find(x => normNo(x.no || x.ogrNo) === no) || null;
+    const clsName = (r && r.sinif) || info.sinif || '';
+    const clsRows = clsName ? allR.filter(x => String(x.sinif || '') === String(clsName)) : allR;
+    const okPct = ogMean(allR.map(x => ogPct(x.net, n.totalQ)));
+    const clsPct = ogMean(clsRows.map(x => ogPct(x.net, n.totalQ)));
+    const pct = r ? ogPct(r.net, n.totalQ) : null;
+
+    // Sıralama bilgisi (dosyada varsa o, yoksa okul/sınıf içi hesaplanan)
+    let rk = null;
+    if (r) {
+      const sortedOk = allR.slice().sort((a, b) => (b.puan != null ? b.puan : b.net) - (a.puan != null ? a.puan : a.net));
+      const sortedCls = clsRows.slice().sort((a, b) => (b.puan != null ? b.puan : b.net) - (a.puan != null ? a.puan : a.net));
+      const okIdx = sortedOk.findIndex(x => normNo(x.no || x.ogrNo) === no);
+      const clsIdx = sortedCls.findIndex(x => normNo(x.no || x.ogrNo) === no);
+      rk = {
+        snf: (r.rk && r.rk.snf != null) ? r.rk.snf : (clsIdx >= 0 ? clsIdx + 1 : null),
+        snfN: clsRows.length || null,
+        okul: (r.rk && r.rk.okul != null) ? r.rk.okul : (okIdx >= 0 ? okIdx + 1 : null),
+        okulN: allR.length || null
+      };
+    }
+
+    per.push({ n, r, pct, cls: { pct: clsPct }, ok: { pct: okPct }, rk });
+
+    // Ders bazlı toplama
+    (n.lessons || []).forEach((l, li) => {
+      const nk = anNk(l.name);
+      if (!nk) return;
+      if (!lesMap.has(nk)) {
+        lesMap.set(nk, { nk, name: l.name, slot: ((slot - 1) % 8) + 1, Ds: [], Ys: [], Bs: [], nets: [], pcts: [], clsPcts: [], rows: [] });
+        slot++;
+      }
+      const entry = lesMap.get(nk);
+      const sec = r && r.sec && r.sec[li];
+      if (sec && l.count) {
+        const d = Number(sec[0] || 0), y = Number(sec[1] || 0), b = sec[2] != null ? Number(sec[2]) : Math.max(0, l.count - d - y);
+        const net = sec[3] != null ? Number(sec[3]) : (d - y * (n.penalty || 0));
+        const lp = ogPct(net, l.count);
+        const clsLp = ogMean(clsRows.map(x => {
+          const sx = x.sec && x.sec[li];
+          if (!sx) return null;
+          const nx = sx[3] != null ? Number(sx[3]) : (Number(sx[0] || 0) - Number(sx[1] || 0) * (n.penalty || 0));
+          return ogPct(nx, l.count);
+        }));
+        entry.Ds.push(d); entry.Ys.push(y); entry.Bs.push(b); entry.nets.push(net);
+        if (lp != null) entry.pcts.push(lp);
+        if (clsLp != null) entry.clsPcts.push(clsLp);
+        entry.rows.push({ n, d, y, b, net, pct: lp });
+      } else {
+        entry.rows.push(null);
+      }
+    });
+  });
+
+  const les = Array.from(lesMap.values()).map(e => ({
+    nk: e.nk, name: e.name, slot: e.slot,
+    D: ogMean(e.Ds), Y: ogMean(e.Ys), B: ogMean(e.Bs), net: ogMean(e.nets),
+    pct: ogMean(e.pcts), clsPct: ogMean(e.clsPcts), rows: e.rows
+  }));
+
+  return {
+    no,
+    ad: info.ad || '',
+    sinif: info.sinif || '',
+    per,
+    taken: per.filter(p => !!p.r),
+    les
+  };
+}
+
+function ogNotes(m) {
+  const out = [], took = m.taken || [], pcs = took.map(p => p.pct).filter(v => v != null);
+  if (!took.length) return out;
+  if (pcs.length >= 2) {
+    const diff = pcs[pcs.length - 1] - pcs[0];
+    out.push(`İlk sınavdan son sınava genel başarı: %${nf(pcs[0], 1)} → %${nf(pcs[pcs.length - 1], 1)} (${ogSgn(diff, 1, ' puan')}; ${ogTrendWord(ogSlope(pcs))}).`);
+  } else if (pcs.length === 1) {
+    out.push(`Girilen sınavda genel başarı yüzdesi %${nf(pcs[0], 1)} olarak gerçekleşti.`);
+  }
+  const clsAvg = ogMean(took.map(p => p.cls.pct)), myAvg = ogMean(pcs);
+  if (myAvg != null && clsAvg != null) {
+    const d = myAvg - clsAvg;
+    out.push(`Ortalama başarı (%${nf(myAvg, 1)}) sınıf ortalamasının (%${nf(clsAvg, 1)}) ${Math.abs(d) < 1 ? 'hemen yanında' : (d > 0 ? nf(d, 1) + ' puan üzerinde' : nf(Math.abs(d), 1) + ' puan altında')}.`);
+  }
+  const les = (m.les || []).filter(l => l.pct != null).sort((a, b) => b.pct - a.pct);
+  if (les.length >= 2) {
+    out.push(`En yüksek başarı ${les[0].name} (%${nf(les[0].pct, 1)}), en çok destek gereken ders ${les[les.length - 1].name} (%${nf(les[les.length - 1].pct, 1)}).`);
+  }
+  const miss = (m.per ? m.per.length : 0) - took.length;
+  if (miss > 0) out.push(`Seçili sınavlardan ${miss} tanesine katılım sağlanmamış.`);
+  return out;
+}
+
+/* ================================================================ KİŞİYE ÖZEL KONU / KAZANIM EYLEM PLANI */
 function ogBuildActionPlan(stuNo, exams, roster) {
-  const s = roster.get(stuNo);
+  const no = normNo(stuNo);
+  const s = roster.get(no);
   const weakTopics = [];
   const lessonGaps = new Map();
 
   (exams || []).forEach(ex => {
-    const r = (ex.rows || []).find(x => String(x.ogrNo) === String(stuNo));
+    const r = (anRows(ex) || ex.rows || []).find(x => normNo(x.no || x.ogrNo) === no);
     if (!r) return;
     const kazList = (ex.config && Array.isArray(ex.config.kazanimlar)) ? ex.config.kazanimlar : [];
     const byQ = new Map(kazList.map(k => [Number(k.soru), k]));
@@ -24,7 +208,7 @@ function ogBuildActionPlan(stuNo, exams, roster) {
     (ex.lessons || []).forEach((l, idx) => {
       const sec = (r.sec && r.sec[idx]) || null;
       if (!sec || !l.count) return;
-      const d = Number(sec[0] || 0), y = Number(sec[1] || 0), b = Number(sec[2] || 0);
+      const d = Number(sec[0] || 0), y = Number(sec[1] || 0), b = sec[2] != null ? Number(sec[2]) : Math.max(0, l.count - d - y);
       const net = sec[3] != null ? Number(sec[3]) : (d - y * (ex.penalty || 0));
       const pct = Math.max(0, Math.min(100, (net / l.count) * 100));
       const cur = lessonGaps.get(l.name) || { ders: l.name, pctSum: 0, n: 0, wrong: 0, blank: 0 };
@@ -94,7 +278,7 @@ function ogBuildActionPlan(stuNo, exams, roster) {
   }
 
   return {
-    studentName: s ? ((s.ad || '') + ' ' + (s.soyad || '')).trim() || stuNo : stuNo,
+    studentName: s ? (s.ad || no) : no,
     weakTopics,
     prioritizedLessons,
     steps
@@ -134,17 +318,14 @@ function ogActionPlanCard(stuNo, exams, roster) {
   );
 }
 
-/**
- * Öğrenci Analiz Sekmesi (ogRender & ogExport).
- * Harici analiz yardımcılarını (ogSorted, ogRoster, ogModel, ogFind, ogByName, ogMean, ogP, ogSgn, ogSlope, ogTrendWord, ogLbl, ogSub, ogFull, ogStat, ogNotes, ogPct, ogN2, ogDownload, ogHd) kullanır.
- */
+/* ================================================================ ÖĞRENCİ SEKMESİ */
 let ogLast = null;
 
 function ogRender(pane, sel, ctx) {
   const exams = ogSorted(sel);
   const roster = ogRoster(exams);
   const classes = anClasses(exams);
-  const stuNo = AN.stu && roster.has(AN.stu) ? AN.stu : '';
+  const stuNo = AN.stu && roster.has(normNo(AN.stu)) ? normNo(AN.stu) : '';
   if (!stuNo && AN.stu) AN.stu = '';
 
   snPrintHead(pane, 'Öğrenci gelişim analizi');
@@ -190,7 +371,7 @@ function ogRender(pane, sel, ctx) {
 
   if (!stuNo) {
     ogLast = null;
-    pane.append(h('div', { class: 'empty card' }, 'Analizini ve eylem planını görmek için yukarıdan bir öğrenci seçin.'));
+    pane.append(h('div', { class: 'empty card' }, 'Analizini ve kişiye özel eylem planını görmek için yukarıdan bir öğrenci seçin.'));
     return;
   }
 
@@ -211,7 +392,10 @@ function ogRender(pane, sel, ctx) {
           h('h2', { style: { marginBottom: '.1rem' } }, m.ad || '(adı yok)'),
           h('div', { class: 'small muted' }, `No: ${m.no} · Sınıf: ${m.sinif || '–'} · Katılım: ${took.length} / ${per.length} sınav`)
         ),
-        h('span', { class: 'pill brand' }, ogTrendWord(ogSlope(pcs)))
+        h('div', { class: 'row no-print' },
+          h('button', { class: 'btn sm primary', onclick: () => { AN.krMode = 'ogr'; AN.krStu = m.no; AN.tab = 'karne'; ctx.draw(); window.scrollTo(0, 0); } }, '📄 Karnesini Aç'),
+          h('span', { class: 'pill brand' }, ogTrendWord(ogSlope(pcs)))
+        )
       ),
       h('div', { class: 'stats', style: { marginTop: '.7rem' } },
         ogStat(ogP(ogMean(pcs)), 'ort. başarı', clsAvg != null ? 'sınıf ort. ' + ogP(clsAvg) : ''),
@@ -231,7 +415,7 @@ function ogRender(pane, sel, ctx) {
   if (notes.length) snNote(pane, 'og-notes', notes);
 
   // Başarı gelişim grafiği
-  if (per.length) {
+  if (per.length && typeof AnViz !== 'undefined') {
     pane.append(
       h('div', { class: 'card' },
         h('h2', null, 'Başarı Gelişim Grafiği (%)'),
@@ -255,7 +439,7 @@ function ogRender(pane, sel, ctx) {
     );
   }
 
-  // Sınav sonuçları tablosu (zebra-tbl)
+  // Sınav sonuçları tablosu
   pane.append(
     h('div', { class: 'card' },
       h('h2', null, 'Sınav Sonuçları'),
