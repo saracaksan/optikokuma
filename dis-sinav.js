@@ -92,6 +92,42 @@ async function dxExtractPdfText(file) {
   }
 }
 
+/** Taranmış (metinsiz) PDF sayfalarını tarayıcıda JPEG görseline çevirir; böylece OpenRouter, Groq ve Mistral da okuyabilir. */
+async function dxRenderPdfToJpeg(file) {
+  try {
+    const pdfjs = await dxEnsurePdfJs();
+    if (!pdfjs) return '';
+    const buf = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+    const maxPages = Math.min(doc.numPages || 0, 3);
+    if (!maxPages) return '';
+    const canvases = [];
+    let totalH = 0, maxW = 0;
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await doc.getPage(p);
+      const vp = page.getViewport({ scale: 1.5 });
+      const c = document.createElement('canvas');
+      c.width = Math.round(vp.width);
+      c.height = Math.round(vp.height);
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      canvases.push(c);
+      totalH += c.height;
+      if (c.width > maxW) maxW = c.width;
+    }
+    const out = document.createElement('canvas');
+    out.width = maxW;
+    out.height = totalH;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, maxW, totalH);
+    let y = 0;
+    canvases.forEach(c => { ctx.drawImage(c, 0, y); y += c.height; });
+    return out.toDataURL('image/jpeg', 0.82).replace(/^data:image\/jpeg;base64,/, '');
+  } catch (e) {
+    return '';
+  }
+}
+
 /** Okul listesinde numarası eşleşmeyen satırlar için istemci tarafında da isim benzerliğiyle öneri üretir. */
 function dxLocalSuggestions(studentsMap, adText) {
   const norm = s => String(s || '').toLocaleLowerCase('tr').replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g').replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c').replace(/[^a-z0-9]/g, '');
@@ -212,11 +248,17 @@ Dis.editor = async function (opts) {
           modeTag = 'PDF Metin';
           clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" metni çıkarıldı (${extracted.length} karakter). Yapay zekâ tablosu oluşturuluyor…`));
         } else {
-          const b64 = await dxReadBase64(file);
-          payload.file = b64;
-          payload.mediaType = 'application/pdf';
-          modeTag = 'Taranmış PDF';
-          clear(summary).append(h('div', { class: 'alert info' }, `🤖 "${file.name}" taranmış PDF olarak algılandı; yapay zekâ ile okunuyor (20–60 sn sürebilir)…`));
+          clear(summary).append(h('div', { class: 'alert info' }, `🖼️ "${file.name}" taranmış PDF; görsele çevrilip tüm yapay zekâlara (OpenRouter / Groq / Mistral / Gemini) hazırlanıyor…`));
+          const jpgB64 = await dxRenderPdfToJpeg(file);
+          if (jpgB64 && jpgB64.length > 500) {
+            payload.file = jpgB64;
+            payload.mediaType = 'image/jpeg';
+            modeTag = 'PDF→Görsel';
+          } else {
+            payload.file = await dxReadBase64(file);
+            payload.mediaType = 'application/pdf';
+            modeTag = 'Ham PDF';
+          }
         }
       } else {
         const b64 = await dxReadBase64(file);
