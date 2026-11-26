@@ -11,5 +11,5 @@
  *    apiUrl değerini güncellemeniz yeterlidir.
  */
 window.OPTIK_CONFIG = {
-  apiUrl: 'https://script.google.com/macros/s/AKfycbydGtPKELuY9fpEEVQMEtswLM7P6ScIeRj213tqvT-Gr_Gj5fS2oOAJxegzEtWr5wzF7A/exec'
+  apiUrl: 'https://script.google.com/macros/s/AKfycbwaXG2psrdC6eYRnVJMqq25RmxYemguecGv43MUzF71zv9WR0CY0jpShrYwQ_7jk09gZQ/exec'
 };
