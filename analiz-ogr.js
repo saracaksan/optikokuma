@@ -6,7 +6,12 @@
 'use strict';
 
 /* ================================================================ ORTAK YARDIMCILAR (og*) */
-const OG_MET = [['pct', 'Başarı %'], ['net', 'Net'], ['puan', 'Puan']];
+const OG_MET = {
+  pct: { l: 'Başarı %', f: v => (v == null || !isFinite(v)) ? '–' : '%' + nf(v, 1), u: ' puan', d: 1 },
+  net: { l: 'Net', f: v => (v == null || !isFinite(v)) ? '–' : nf(v, 2), u: ' net', d: 2 },
+  puan: { l: 'Puan', f: v => (v == null || !isFinite(v)) ? '–' : nf(v, 1), u: ' puan', d: 1 }
+};
+const ogKey = s => anNk(s);
 const ogSorted = sel => (sel || []).slice().sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || String(a.name || '').localeCompare(String(b.name || ''), 'tr'));
 const ogMean = arr => { const v = (arr || []).filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + Number(b), 0) / v.length : null; };
 const ogPct = (net, totalQ) => (net != null && isFinite(net) && totalQ > 0) ? Math.max(0, Math.min(100, (Number(net) / Number(totalQ)) * 100)) : null;

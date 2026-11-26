@@ -120,42 +120,84 @@ function okulRender(pane, sel, ctx) {
         if (!target.isConnected) return;
         clear(target);
         const rSchools = reg.schools || [], rExams = reg.exams || [];
-        const dersler = Array.from(new Set(rSchools.flatMap(s => Object.keys(s.dersOrt || {}))));
         const activeSch = school ? String(school.okulKodu) : '';
+        const turler = Array.from(new Set(rSchools.map(s => s.tur).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'tr'));
+        let selTur = '', onlyPicked = false;
+        const picked = new Set(rSchools.map(s => String(s.okulKodu)));
+        const turSel = h('select', { onchange: e => { selTur = e.target.value; paintReg(); } },
+          h('option', { value: '' }, 'Tüm düzeyler (İlkokul / Ortaokul / Lise)'),
+          turler.map(t => h('option', { value: t }, t)));
+        const onlyChk = h('input', { type: 'checkbox', style: { width: 'auto', minHeight: 0 }, onchange: e => { onlyPicked = e.target.checked; paintReg(); } });
+        const regOut = h('div');
+
+        function paintReg() {
+          clear(regOut);
+          const inTur = rSchools.filter(s => !selTur || s.tur === selTur);
+          const shown = onlyPicked ? inTur.filter(s => picked.has(String(s.okulKodu))) : inTur;
+          const cmpList = inTur.filter(s => picked.has(String(s.okulKodu)));
+          const dersler = Array.from(new Set(cmpList.flatMap(s => Object.keys(s.dersOrt || {}))));
+          const validNet = cmpList.filter(s => s.avgNet != null);
+
+          regOut.append(
+            h('div', { class: 'stats', style: { marginBottom: '.7rem' } },
+              ogStat(cmpList.length, 'karşılaştırılan okul', `${inTur.length} okul içinde`),
+              ogStat(cmpList.reduce((a, s) => a + (s.ogrenciSayisi || 0), 0), 'kayıtlı öğrenci'),
+              ogStat(rExams.length, 'ortak sınav'),
+              ogStat(validNet.length ? nf(validNet.reduce((a, s) => a + (s.avgNet || 0), 0) / validNet.length, 2) : '–', 'seçili okullar ort. net')
+            )
+          );
+
+          if (cmpList.length >= 2 && typeof AnViz !== 'undefined' && cmpList.some(s => s.avgPct != null)) {
+            regOut.append(
+              h('div', { style: { marginBottom: '.7rem' } },
+                AnViz.bars({
+                  rows: cmpList.filter(s => s.avgPct != null).slice(0, 15).map(s => ({ label: s.okulAdi, sub: s.ilce || '', vals: [s.avgPct] })),
+                  series: [{ name: 'Seçili okullar ort. başarı %', c: 1 }],
+                  fmt: v => '%' + nf(v, 1), max: 100, min: 0, xFmt: v => v + '%', label: 'Seçili okullar karşılaştırması'
+                })
+              )
+            );
+          }
+
+          regOut.append(
+            shown.length
+              ? h('div', { class: 'tablewrap' },
+                  h('table', { class: 'an-table zebra-tbl' },
+                    h('thead', null, h('tr', null,
+                      ['Seç', 'Sıra', 'Okul', 'Düzey', 'İlçe', 'Öğrenci', 'Sınav', 'Ort. Net', 'Ort. Puan', 'Başarı %', ...dersler.map(d => d + ' Net')].map((t, idx) => h('th', { class: idx >= 5 ? 'num' : '' }, t)))),
+                    h('tbody', null, shown.map((s, idx) => {
+                      const code = String(s.okulKodu);
+                      return h('tr', { class: 'an-row' + (code === activeSch ? ' mine' : '') },
+                        h('td', { onclick: ev => ev.stopPropagation() },
+                          h('input', { type: 'checkbox', checked: picked.has(code), style: { width: 'auto', minHeight: 0 }, 'aria-label': s.okulAdi + ' seç', onchange: ev => { ev.target.checked ? picked.add(code) : picked.delete(code); paintReg(); } })),
+                        h('td', { class: 'num' }, h('b', null, idx + 1)),
+                        h('td', { title: 'Bu okulun detay analizine geç', onclick: () => { AN.okul = code; Sel.set({ okul: code }); ctx.draw(); } }, h('b', null, s.okulAdi)),
+                        h('td', { class: 'small muted' }, s.tur || ''),
+                        h('td', null, s.ilce || ''),
+                        h('td', { class: 'num' }, s.ogrenciSayisi ?? 0),
+                        h('td', { class: 'num' }, s.sinavSayisi ?? 0),
+                        h('td', { class: 'num' }, s.avgNet != null ? h('b', null, nf(s.avgNet, 2)) : '–'),
+                        h('td', { class: 'num' }, s.avgPuan != null ? nf(s.avgPuan, 2) : '–'),
+                        h('td', { class: 'num' }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'),
+                        ...dersler.map(d => h('td', { class: 'num' }, (s.dersOrt && s.dersOrt[d] != null) ? nf(s.dersOrt[d], 2) : '–'))
+                      );
+                    }))
+                  )
+                )
+              : h('div', { class: 'muted' }, 'Seçilen filtrede okul bulunmuyor.')
+          );
+        }
 
         target.append(
-          h('div', { class: 'stats', style: { marginBottom: '.7rem' } },
-            ogStat(reg.schoolCount || 0, 'toplam okul'),
-            ogStat(reg.totalStudents || 0, 'kayıtlı öğrenci'),
-            ogStat(rExams.length, 'ortak sınav'),
-            ogStat(rSchools.length ? nf(rSchools.reduce((a, s) => a + (s.avgNet || 0), 0) / Math.max(1, rSchools.filter(s => s.avgNet != null).length), 2) : '–', 'bölge ort. net')
+          h('div', { class: 'row an-f no-print', style: { marginBottom: '.6rem', gap: '.5rem' } },
+            turSel,
+            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || s.tur === selTur).forEach(s => picked.add(String(s.okulKodu))); paintReg(); } }, 'Tümünü seç'),
+            h('button', { type: 'button', class: 'btn sm', onclick: () => { rSchools.filter(s => !selTur || s.tur === selTur).forEach(s => picked.delete(String(s.okulKodu))); paintReg(); } }, 'Temizle'),
+            h('label', { class: 'small row', style: { gap: '.3rem' } }, onlyChk, 'Yalnızca seçilenleri göster (2–3+ okul kıyasla)')
           ),
-          rSchools.length
-            ? h('div', { class: 'tablewrap' },
-                h('table', { class: 'an-table zebra-tbl' },
-                  h('thead', null, h('tr', null,
-                    ['Sıra', 'Okul', 'İlçe', 'Öğrenci', 'Sınav', 'Ort. Net', 'Ort. Puan', 'Başarı %', ...dersler.map(d => d + ' Net')].map((t, idx) => h('th', { class: idx >= 3 ? 'num' : '' }, t)))),
-                  h('tbody', null, rSchools.map((s, idx) =>
-                    h('tr', {
-                      class: 'an-row' + (String(s.okulKodu) === activeSch ? ' mine' : ''),
-                      title: 'Bu okulu seçip analizini açmak için tıklayın',
-                      onclick: () => { AN.okul = String(s.okulKodu); Sel.set({ okul: String(s.okulKodu) }); ctx.draw(); }
-                    },
-                      h('td', { class: 'num' }, h('b', null, s.rank || (idx + 1))),
-                      h('td', null, h('b', null, s.okulAdi)),
-                      h('td', null, s.ilce || ''),
-                      h('td', { class: 'num' }, s.ogrenciSayisi ?? 0),
-                      h('td', { class: 'num' }, s.sinavSayisi ?? 0),
-                      h('td', { class: 'num' }, s.avgNet != null ? h('b', null, nf(s.avgNet, 2)) : '–'),
-                      h('td', { class: 'num' }, s.avgPuan != null ? nf(s.avgPuan, 2) : '–'),
-                      h('td', { class: 'num' }, s.avgPct != null ? '%' + nf(s.avgPct, 1) : '–'),
-                      ...dersler.map(d => h('td', { class: 'num' }, (s.dersOrt && s.dersOrt[d] != null) ? nf(s.dersOrt[d], 2) : '–'))
-                    )
-                  ))
-                )
-              )
-            : h('div', { class: 'muted' }, 'Bu bölgede henüz okul veya ortak sınav sonucu bulunmuyor.')
+          regOut
         );
+        paintReg();
       } catch (e) {
         if (target.isConnected) {
           clear(target);
