@@ -76,7 +76,7 @@ function icon(name) {
 
 /* CSV / Excel'den yapıştırılan metni tabloya çevir */
 function parseTable(text) {
-  text = String(text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n').trim(); if (!text) return [];
+  text = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim(); if (!text) return [];
   const first = text.split('\n')[0], delim = first.includes('\t') ? '\t' : (first.split(';').length >= first.split(',').length ? ';' : ',');
   const rows = []; let row = [], cur = '', q = false;
   for (let i = 0; i < text.length; i++) {
@@ -96,7 +96,7 @@ function toCSV(rows) {
     if (/^[=+@\t\r]/.test(v) || (/^-/.test(v) && !/^-[\d.,]+$/.test(v))) v = "'" + v;      // Excel formül enjeksiyonu: =, +, @, - ile başlayan metinler (sayılar hariç) etkisizleştirilir
     return /[;"\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
-  return '﻿' + rows.map(r => r.map(esc).join(';')).join('\r\n');    // BOM + ; : Türkçe Excel'de doğrudan açılır
+  return '\uFEFF' + rows.map(r => r.map(esc).join(';')).join('\r\n');    // BOM + ; : Türkçe Excel'de doğrudan açılır
 }
 function download(name, data, type) {
   const blob = data instanceof Blob ? data : new Blob([data], { type: type || 'text/csv;charset=utf-8' });
@@ -212,11 +212,11 @@ const Sel = (() => {
 
 /* ------------------------------------------------------------------ okul seçimi: il → ilçe → düzey (+ arama)
    Uzun okul listesini adım adım daraltır. Yalnızca ayırt edici olan süzgeçler görünür (tek il varsa il kutusu çıkmaz). */
-const spNorm = v => String(v == null ? '' : v).toLocaleLowerCase('tr').replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u').replace(/̇/g, '');
+const spNorm = v => String(v == null ? '' : v).toLocaleLowerCase('tr').replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u').replace(/\u0307/g, '');
 const spUniq = a => Array.from(new Set(a.filter(Boolean))).sort((x, y) => String(x).localeCompare(String(y), 'tr'));
 /** schools: okul dizisi. onChange(liste, kullanıcıDeğiştirdi) süzgeç her değiştiğinde çağrılır. Döner: { el, list(), any (görünür süzgeç var mı), set({il,ilce,tur,q}), destroy() }
- *  Süzgeçler (il/ilçe/düzey) ortak seçimden (Sel) başlar ve her değişiklikte ona yazılır; başka ekrandaki/üstteki süzgeçler de birlikte güncellenir.
- *  opts: { keep: bu okulun görünür kalması için süzgeçleri gevşet, shared: false → ortak seçimden bağımsız } */
+ * Süzgeçler (il/ilçe/düzey) ortak seçimden (Sel) başlar ve her değişiklikte ona yazılır; başka ekrandaki/üstteki süzgeçler de birlikte güncellenir.
+ * opts: { keep: bu okulun görünür kalması için süzgeçleri gevşet, shared: false → ortak seçimden bağımsız } */
 function schoolFilterBar(schools, onChange, opts) {
   opts = opts || {}; const shared = opts.shared !== false, me = opts.me || {};
   const all = (schools || []).slice().sort((a, b) => String(a.okulAdi).localeCompare(String(b.okulAdi), 'tr'));
@@ -242,7 +242,6 @@ function schoolFilterBar(schools, onChange, opts) {
     ilSel.hidden = ils.length < 2; ilceSel.hidden = ilceVals.length < 2; turSel.hidden = turVals.length < 2 && !f.tur; q.hidden = all.length < 8 && !f.q;
     if (user === true && shared) {
       seenV = { il: f.il, ilce: f.ilce, tur: f.tur }; Sel.set(seenV, me);
-      // süzgeç seçili okulu dışarıda bırakıyorsa ortak okul seçimi temizlenir (il/ilçe/düzey ile okul çelişmesin)
       const k = Sel.v.okul && all.find(s => String(s.okulKodu) === Sel.v.okul); if (k && !(inArea(k) && (!f.tur || k.tur === f.tur))) Sel.set({ okul: '' }, me);
     }
     const l = list(), active = !!(f.il || f.ilce || f.tur || f.q);
@@ -253,10 +252,6 @@ function schoolFilterBar(schools, onChange, opts) {
   paint(false);
   return { el, list, get any() { return !(ilSel.hidden && ilceSel.hidden && turSel.hidden && q.hidden); }, set(v) { Object.assign(f, v || {}); paint(true); }, destroy: off };
 }
-/** Var olan okul <select>'ini süzgeçli hale getirir (id, value, change olayı aynen çalışır). Seçenek yoksa/tek okul varsa select'i olduğu gibi döndürür.
- *  Dönen öğeyi sayfaya koyun. İlk seçenek value="" ise yer tutucu olarak korunur.
- *  Seçili okul ortak seçimdendir (Sel.okul): başlangıçta onu gösterir, kullanıcı değiştirince ona yazar, başka ekrandaki seçici değişince eşitlenir.
- *  opts: { extra: [{value,label}] listenin başında sabit özel seçenekler (örn. "otomatik"), shared: false → ortak seçimden bağımsız } */
 function schoolPicker(sel, schools, opts) {
   opts = opts || {};
   if (sel.disabled || !schools || schools.length < 2) return sel;
@@ -375,6 +370,17 @@ App.sessionExpired = function (msg) {
   setTimeout(() => { App._expiring = false; }, 500);
 };
 
+/** Veli / Öğrenci sonuç ekranını her yerden (ana sayfa, WhatsApp bağlantısı, hash) güvenle açar. */
+App.openVeliPortal = function () {
+  if (!String(location.hash || '').startsWith('#/ogrenci')) {
+    try { location.hash = '#/ogrenci'; } catch (e) { }
+  }
+  if (typeof Veli !== 'undefined' && typeof Veli.renderPublic === 'function') Veli.renderPublic();
+  else if (typeof App.renderPortal === 'function') App.renderPortal();
+  else if (typeof App.renderVeli === 'function') App.renderVeli();
+  else toast('Veli bilgilendirme modülü (veli.js) yüklenemedi. Sayfayı yenileyin (Ctrl+Shift+R).', 'bad');
+};
+
 /* ------------------------------------------------------------------ giriş */
 App.renderLogin = function (msg) {
   const app = clear($('#app')); Install.clearBanner();
@@ -383,25 +389,48 @@ App.renderLogin = function (msg) {
   const un = h('input', { type: 'text', id: 'f-user', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', value: Settings.get('lastUser', '') });
   const pw = h('input', { type: 'password', id: 'f-pass', autocomplete: 'current-password' });
   const err = h('div', { class: 'alert bad hidden', id: 'f-err' });
-  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%' } }, 'Giriş yap');
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%' } }, 'Öğretmen / Yönetici Girişi');
   const form = h('form', { onsubmit: async ev => {
     ev.preventDefault(); err.classList.add('hidden'); btn.disabled = true; btn.textContent = 'Giriş yapılıyor…';
     try {
       const u = url.value.trim(); if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(u) && !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(u)) throw new Error('Adres https://script.google.com/macros/s/…/exec biçiminde olmalı.');
-      Settings.set('apiUrl', u === cfgUrl ? '' : u);   // yöneticinin config.js adresiyle aynıysa ayrıca saklanmaz (adres sonradan değişirse kendiliğinden güncellenir)
+      Settings.set('apiUrl', u === cfgUrl ? '' : u);
       const d = await api('login', { username: un.value.trim(), password: pw.value }, { noAuthRedirect: true });
       App.state.token = d.token; App.state.user = d.user; Settings.set('token', d.token); Settings.set('lastUser', un.value.trim()); await DB.put('kv', d.user, 'user');
       await App.start();
-    } catch (e) { err.textContent = isNetErr(e) ? 'Sunucuya ulaşılamadı. İnternet bağlantısını ve adresi kontrol edin.' : e.message; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Giriş yap'; }
+    } catch (e) { err.textContent = isNetErr(e) ? 'Sunucuya ulaşılamadı. İnternet bağlantısını ve adresi kontrol edin.' : e.message; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Öğretmen / Yönetici Girişi'; }
   } },
     cfgUrl && getApiUrl() === cfgUrl ? h('details', { class: 'small' }, h('summary', null, 'Sunucu adresi (yöneticiniz tanımladı)'), h('div', { class: 'field', style: { marginTop: '.4rem' } }, url)) : h('div', { class: 'field' }, h('label', { for: 'f-url' }, 'Sunucu adresi (Apps Script)'), url),
     h('div', { class: 'field', style: { marginTop: '.7rem' } }, h('label', { for: 'f-user' }, 'Kullanıcı adı'), un),
     h('div', { class: 'field', style: { margin: '.7rem 0' } }, h('label', { for: 'f-pass' }, 'Parola'), pw), err, btn);
-  app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, APP_NAME), h('p', { class: 'center', style: { margin: '-.2rem 0 .6rem', fontWeight: 600, color: 'var(--brand)' } }, 'Optik okuma ve sınav analiz sistemi'),
-    msg ? h('div', { class: 'alert warn' }, msg) : null, h('div', { class: 'card' }, form),
+
+  // Öne çıkarılmış Veli / Öğrenci Bilgilendirme Kartı (ana sayfanın en üstünde)
+  const veliCard = h('div', {
+    class: 'card',
+    style: {
+      border: '2px solid var(--brand, #2563eb)',
+      background: 'linear-gradient(135deg, rgba(37,99,235,0.08), rgba(16,185,129,0.08))',
+      marginBottom: '.9rem',
+      textAlign: 'center'
+    }
+  },
+    h('div', { style: { fontSize: '1.05rem', fontWeight: 700, color: 'var(--brand, #1d4ed8)', marginBottom: '.25rem' } }, '🎓 Veli & Öğrenci Bilgilendirme Sistemi'),
+    h('p', { class: 'small muted', style: { margin: '0 0 .65rem' } }, 'Sınav sonuçları, sıralamalar ve kişiye özel kazanım eylem planı için veli kodunuzla veya Gmail hesabınızla doğrudan giriş yapın.'),
+    h('button', {
+      type: 'button',
+      id: 'f-portal',
+      class: 'btn primary',
+      style: { width: '100%', fontWeight: 700, padding: '.7rem 1rem' },
+      onclick: () => App.openVeliPortal()
+    }, '📊 Veli / Öğrenci Sonuç Ekranına Gir')
+  );
+
+  app.append(h('div', { class: 'login' }, h('img', { class: 'logo', src: 'icon.svg', alt: '' }), h('h1', null, APP_NAME), h('p', { class: 'center', style: { margin: '-.2rem 0 .7rem', fontWeight: 600, color: 'var(--brand)' } }, 'Optik okuma ve sınav analiz sistemi'),
+    msg ? h('div', { class: 'alert warn' }, msg) : null,
+    veliCard,
+    h('div', { class: 'card' }, h('h2', { style: { marginTop: 0, fontSize: '1rem' } }, 'Öğretmen & Yönetici Girişi'), form),
     Install.card(),
     h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kayit', id: 'f-register' }, 'Üye ol: öğretmen veya okul kaydı')),
-    h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/ogrenci', id: 'f-portal' }, 'Öğrenci / veli: sonuç sorgulama')),
     h('p', { class: 'center', style: { margin: '.2rem 0 .6rem' } }, h('a', { href: '#/kilavuz', id: 'f-guide' }, 'Kullanım kılavuzu')),
     h('p', { class: 'muted small center' }, 'Okul, ilçe ve il bazlı optik okuma, puanlama ve karşılaştırma.'),
     saCopyrightFooter()));

@@ -4,7 +4,7 @@
 
 const AN = { okul: '', cls: '', q: '', sel: new Set(), selInit: false, metric: 'net', lesson: '', tab: 'list', stu: '', stuLesson: '', ls: 'genel', autoAll: {}, examId: '', data: new Map(), names: new Map(), loading: new Set(), sort: { key: 'puan', dir: -1 }, dsort: { key: 'ad', dir: 1 }, busyMsg: '' };
 const anSumQ = L => L.reduce((a, x) => a + (x.count || 0), 0);
-const anNk = s => DisCore.nk(s);
+const anNk = s => (typeof DisCore !== 'undefined' && DisCore.nk) ? DisCore.nk(s) : String(s || '').toLocaleLowerCase('tr').replace(/[^a-z0-9çğıöşü]/gi, '');
 const anDate = d => (d ? String(d).slice(0, 10) : '');
 const anFmtDate = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m ? `${m[3]}.${m[2]}.${m[1]}` : (d || ''); };
 
@@ -22,8 +22,8 @@ function anSetOkul(code) { AN.okul = String(code); Settings.set('anOkul', AN.oku
 /* ---------------------------------------------------------------- veri */
 function anNormInt(D) {
   const cfg = D.exam.config || {}, lessons = D.sections.map(s => ({ name: s.name, count: s.count || 0 }));
-  const rows = D.rows.map(r => ({ okulKodu: String(r.okulKodu), no: normNo(r.ogrNo), ad: r.ad || '', sinif: r.sinif || '', sec: r.sec.map(s => [s[0], s[1], s[2], s[3]]), D: r.D, Y: r.Y, B: r.B, net: r.net, puan: r.puan, rk: { snf: r.rSinif, okul: r.rOkul, ilce: r.rIlce, il: r.rIl, genel: r.rGenel }, registered: r.registered !== false }));
-  return { id: D.exam.examId, ext: false, name: D.exam.name, date: anDate(D.exam.date), kaynak: 'Sistem', lessons, penalty: cfg.penalty || 0, puanAdi: 'Puan', rows, avg: null, avgOkul: null, totalQ: anSumQ(lessons), cohortN: D.cohort ? D.cohort.n : rows.length };
+  const rows = D.rows.map(r => ({ okulKodu: String(r.okulKodu), no: normNo(r.ogrNo), ad: r.ad || '', sinif: r.sinif || '', sec: r.sec.map(s => [s[0], s[1], s[2], s[3]]), D: r.D, Y: r.Y, B: r.B, net: r.net, puan: r.puan, rk: { snf: r.rSinif, okul: r.rOkul, ilce: r.rIlce, il: r.rIl, genel: r.rGenel }, registered: r.registered !== false, answers: r.answers, booklet: r.booklet, secStd: r.secStd }));
+  return { id: D.exam.examId, ext: false, name: D.exam.name, date: anDate(D.exam.date), kaynak: 'Sistem', lessons, penalty: cfg.penalty || 0, puanAdi: 'Puan', rows, avg: null, avgOkul: null, totalQ: anSumQ(lessons), cohortN: D.cohort ? D.cohort.n : rows.length, config: cfg, stats: D.stats || null };
 }
 function anNormExt(d) {
   const ex = d.exam, c = ex.config, lessons = c.lessons.map(l => ({ name: l.name, count: l.count || 0 })), tq = anSumQ(lessons);
@@ -56,7 +56,9 @@ async function anStudents(code) {
 const anCatalog = () => {
   const S = App.state, out = [];
   S.exams.forEach(e => out.push({ id: e.examId, ext: false, name: e.name, date: anDate(e.date), kaynak: 'Sistem', raw: e }));
-  Dis.list.filter(e => String(e.okulKodu) === String(AN.okul)).forEach(e => out.push({ id: e.examId, ext: true, name: e.name, date: anDate(e.date), kaynak: e.kaynak || 'Dış sınav', raw: e }));
+  if (typeof Dis !== 'undefined' && Array.isArray(Dis.list)) {
+    Dis.list.filter(e => String(e.okulKodu) === String(AN.okul)).forEach(e => out.push({ id: e.examId, ext: true, name: e.name, date: anDate(e.date), kaynak: e.kaynak || 'Dış sınav', raw: e }));
+  }
   return out.sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || a.name.localeCompare(b.name, 'tr'));
 };
 const anSelected = () => anCatalog().filter(e => AN.sel.has(e.id) && AN.data.has(e.id)).map(e => AN.data.get(e.id));
@@ -107,18 +109,15 @@ function anSpark(vals) {
 function anPrint() {
   if (AN.tab === 'karne' && typeof krPending === 'function' && krPending()) return toast('Karneler hazırlanıyor; birkaç saniye bekleyip yeniden deneyin.', 'warn');
   document.body.classList.add('pt-printing');
-  // Karneler A4 dikey, diğer analiz çıktıları A4 yatay basılır (kâğıt yönü bu sayfa kuralıyla belirlenir).
   const pg = document.createElement('style'); pg.id = 'an-page-style'; pg.textContent = AN.tab === 'karne' ? '@page { size: A4 portrait; margin: 10mm; }' : '@page { size: A4 landscape; margin: 10mm; }'; document.head.appendChild(pg);
   const done = () => { document.body.classList.remove('pt-printing'); pg.remove(); window.removeEventListener('afterprint', done); };
   window.addEventListener('afterprint', done); setTimeout(() => window.print(), 50);
 }
 
-/* Sekme kayıt defteri: analiz-ogr.js öğrenci / sınıf / ders / liste sekmelerini buraya ekler. { id, label, filters:[], render(pane, sel, ctx), export(sel, ctx) } */
+/* Sekme kayıt defteri: analiz-ogr.js, analiz-sinif.js, analiz-okul.js, analiz-karne.js sekmelerini buraya ekler. */
 const ANTABS = [];
-/* Sekmeler gruplanmış sırayla gösterilir: Sınav · Kişi ve gruplar · Kıyas · Çıktı. Sekme kimlikleri (an-tab-<id>) sabittir. */
 const AN_GROUPS = [['Sınav', ['list', 'cmp']], ['Kim / hangi grup', ['ogr', 'sinif', 'ders', 'okul']], ['Kıyas ve liste', ['kars', 'dev', 'listeler']], ['Çıktı', ['karne']]];
 const AN_ORDER = AN_GROUPS.flatMap(g => g[1]), AN_LABEL = { list: 'Sınav listesi', dev: 'Gelişim (net artışı)', cmp: 'Sınav özeti' };
-/** Bu sekmeler ilk açılışta okulun bütün sınavlarını analize katar. */
 const AN_AUTOALL = ['ogr', 'sinif', 'ders', 'listeler', 'okul', 'kars', 'karne'];
 
 /* ---------------------------------------------------------------- görünüm */
@@ -129,13 +128,19 @@ App.views.analiz = function (root) {
   if (!AN.okul || !schoolByCode(AN.okul)) AN.okul = String((u.okulKodu && schoolByCode(u.okulKodu)) ? u.okulKodu : (Settings.get('anOkul', '') && schoolByCode(Settings.get('anOkul', '')) ? Settings.get('anOkul', '') : (schools[0] ? schools[0].okulKodu : '')));
   const top = h('div'), body = h('div', { id: 'an-body' });
   root.append(h('div', { class: 'row between no-print' }, h('h1', null, 'Sınav analizi'), h('div', { class: 'row' },
-    h('button', { class: 'btn primary', id: 'an-add', onclick: () => anAdd('upload') }, '+ Dış sınav ekle'), h('button', { class: 'btn', id: 'an-addrow', onclick: () => anAdd('grid') }, 'Satır satır gir'), h('button', { class: 'btn', id: 'an-tpl', onclick: () => Dis.templateModal() }, '⬇ Excel şablonu'))), top, body);
+    h('button', { class: 'btn primary', id: 'an-add', onclick: () => anAdd('upload') }, '+ Dış sınav ekle'), h('button', { class: 'btn', id: 'an-addrow', onclick: () => anAdd('grid') }, 'Satır satır gir'), h('button', { class: 'btn', id: 'an-tpl', onclick: () => typeof Dis !== 'undefined' && Dis.templateModal() }, '⬇ Excel şablonu'))), top, body);
   if (!schools.length) { body.append(h('div', { class: 'empty card' }, 'Önce bir okul ve öğrenci listesi ekleyin (Yönetim → Okullar).')); return; }
 
-  async function anAdd(tab) { if (!Dis.loaded) await Dis.load().catch(() => { }); Dis.editor({ okulKodu: AN.okul, tab, onSaved: id => { AN.data.delete(id); AN.sel.add(id); draw(); loadSelected(); } }); }
+  async function anAdd(tab) {
+    if (typeof Dis === 'undefined') return toast('Dış sınav modülü (dis-sinav.js) yüklenemedi. Sayfayı yenileyin (Ctrl+Shift+R).', 'bad');
+    if (!Dis.loaded) await Dis.load().catch(() => { });
+    Dis.editor({ okulKodu: AN.okul, tab, onSaved: id => { AN.data.delete(id); AN.sel.add(id); draw(); loadSelected(); } });
+  }
   async function init() {
     clear(body).append(h('div', { class: 'card muted' }, 'Sınavlar yükleniyor…'));
-    try { await Dis.load(); } catch (e) { if (!Dis.loaded) { Dis.list = []; body.append(h('div', { class: 'alert warn' }, 'Dış sınav listesi alınamadı: ' + e.message)); } }
+    if (typeof Dis !== 'undefined') {
+      try { await Dis.load(); } catch (e) { if (!Dis.loaded) { Dis.list = []; body.append(h('div', { class: 'alert warn' }, 'Dış sınav listesi alınamadı: ' + e.message)); } }
+    }
     if (!AN.selInit) { const c = anCatalog(); c.slice(-4).forEach(e => AN.sel.add(e.id)); AN.selInit = true; }
     draw(); loadSelected();
   }
@@ -152,7 +157,7 @@ App.views.analiz = function (root) {
 
   function draw() {
     if (App.state.view !== 'analiz') return;
-    if (anSyncOkul(schools)) { init(); return; }   // başka ekranda/üstteki pencerede okul değiştiyse analiz de ona geçer
+    if (anSyncOkul(schools)) { init(); return; }
     clear(top); clear(body); const cat = anCatalog(), sel = anSelected();
     const okulSel = h('select', { id: 'an-okul', onchange: e => { anSetOkul(e.target.value); init(); } }, schools.map(s => h('option', { value: s.okulKodu }, schoolLabel(s)))); okulSel.value = AN.okul;
     top.append(h('div', { class: 'card no-print' }, h('div', { class: 'row an-f', style: { marginBottom: '.6rem' } }, h('b', null, 'Okul'), schoolPicker(okulSel, schools), h('span', { id: 'an-status', class: 'small muted' })), examTable(cat)));
@@ -170,7 +175,19 @@ App.views.analiz = function (root) {
     const filt = h('div', { class: 'row an-f no-print', style: { marginBottom: '.7rem' } }, fl.includes('q') ? q : null, fl.includes('cls') ? cls : null, fl.includes('metric') ? [h('span', { class: 'small muted' }, 'Ölçüt:'), met] : null, fl.includes('lesson') ? les : null, h('span', { class: 'grow' }), (!rt || rt.export) ? h('button', { class: 'btn', id: 'an-xlsx', onclick: () => exportXlsx() }, '⬇ Excel') : null, h('button', { class: 'btn', id: 'an-print', title: 'Yazdırma penceresini açar; hedef olarak "PDF olarak kaydet" seçilebilir', onclick: () => anPrint() }, 'Yazdır / PDF'));
     const pane = h('div', { id: 'an-pane' }); body.append(tb, filt, pane); renderTab();
   }
-  function renderTab() { const pane = $('#an-pane'); if (!pane) return; clear(pane); const sel = anSelected(); if (!sel.length) return; const rt = ANTABS.find(t => t.id === AN.tab); if (rt) rt.render(pane, sel, ctx); else ({ list: tabList, dev: tabDev, cmp: tabCmp })[AN.tab](pane, sel); drawStatus(); }
+  function renderTab() {
+    const pane = $('#an-pane'); if (!pane) return; clear(pane);
+    const sel = anSelected(); if (!sel.length) return;
+    const rt = ANTABS.find(t => t.id === AN.tab);
+    try {
+      if (rt) rt.render(pane, sel, ctx);
+      else ({ list: tabList, dev: tabDev, cmp: tabCmp })[AN.tab](pane, sel);
+    } catch (e) {
+      console.error('Analiz sekme hatası:', AN.tab, e);
+      pane.append(h('div', { class: 'alert bad' }, `Bu analiz sekmesi (${AN.tab}) açılırken hata oluştu: ${e && e.message ? e.message : e}`));
+    }
+    drawStatus();
+  }
 
   /* ---- sınav seçim tablosu */
   function examTable(cat) {
@@ -180,7 +197,7 @@ App.views.analiz = function (root) {
       return h('tr', null, h('td', null, h('input', { type: 'checkbox', class: 'an-ck', 'data-id': en.id, 'aria-label': en.name + ' seç', checked: AN.sel.has(en.id), style: { width: 'auto', minHeight: 0 }, onchange: e => { e.target.checked ? AN.sel.add(en.id) : AN.sel.delete(en.id); if (e.target.checked) { drawStatus(); loadSelected(); } draw(); } })),
         h('td', { class: 'nowrap' }, anFmtDate(en.date)), h('td', null, en.name), h('td', null, badge(en)), h('td', { class: 'num' }, n ? n.totalQ : ''),
         h('td', { class: 'num' }, AN.loading.has(en.id) ? '…' : (n ? (mine.length || h('span', { class: 'muted', title: 'Bu okuldan katılım yok' }, '0')) : '')), h('td', { class: 'num' }, nf(avgNet)), h('td', { class: 'num' }, nf(avgP)),
-        h('td', { class: 'nowrap' }, en.ext && en.raw.canEdit ? [h('button', { class: 'btn ghost sm an-edit', 'data-id': en.id, onclick: () => Dis.editor({ exam: en.raw, onSaved: id => { AN.data.delete(id); loadSelected(); draw(); } }) }, 'Düzenle'), h('button', { class: 'btn ghost sm an-del', 'data-id': en.id, onclick: () => Dis.remove(en.raw, () => { AN.sel.delete(en.id); AN.data.delete(en.id); draw(); }) }, 'Sil')] : null));
+        h('td', { class: 'nowrap' }, en.ext && en.raw.canEdit && typeof Dis !== 'undefined' ? [h('button', { class: 'btn ghost sm an-edit', 'data-id': en.id, onclick: () => Dis.editor({ exam: en.raw, onSaved: id => { AN.data.delete(id); loadSelected(); draw(); } }) }, 'Düzenle'), h('button', { class: 'btn ghost sm an-del', 'data-id': en.id, onclick: () => Dis.remove(en.raw, () => { AN.sel.delete(en.id); AN.data.delete(en.id); draw(); }) }, 'Sil')] : null));
     });
     return h('div', null, h('div', { class: 'row', style: { marginBottom: '.4rem' } }, h('b', null, 'Sınavlar'), h('span', { class: 'small muted' }, 'İşaretlediğiniz sınavlar analize girer (sistem + dış).'), h('span', { class: 'grow' }),
       h('button', { class: 'btn sm', id: 'an-all', onclick: () => { cat.forEach(e => AN.sel.add(e.id)); draw(); loadSelected(); } }, 'Hepsini seç'), h('button', { class: 'btn sm', onclick: () => { AN.sel.clear(); draw(); } }, 'Temizle'), h('button', { class: 'btn sm', onclick: () => { AN.sel.clear(); cat.slice(-4).forEach(e => AN.sel.add(e.id)); draw(); loadSelected(); } }, 'Son 4')),

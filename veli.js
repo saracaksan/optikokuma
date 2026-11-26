@@ -5,7 +5,7 @@
  *  1) Hızlı Sorgu (girişsiz): İl → İlçe → Okul → Sınıf → Okul No (+ varsa Veli Kodu)
  *  2) Veli Girişi: Gmail / e-posta + parola ile tek tıkla öğrencinin tüm sınav sonuçları ve eylem planı
  *  3) Veli Üyeliği: Gmail / e-posta + cep telefonu + okul/sınıf/öğrenci no (+ veli kodu) ile kalıcı hesap açma
- * Sonuç ekranında: net, puan, sınıf/okul/genel sıralama, ders ders netler, cevap anahtarı ve kişiye özel Konu/Kazanım Eylem Planı.
+ * WhatsApp bağlantısı (#/ogrenci?okul=...&sinif=...&no=...&kod=...) ile açıldığında okul, sınıf ve numara otomatik dolar.
  */
 'use strict';
 
@@ -16,17 +16,26 @@ const Veli = (() => {
   function clearIdle() { if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; } }
   function startIdle(onExpire) {
     clearIdle();
-    idleTimer = setTimeout(() => { onExpire && onExpire(); }, 10 * 60 * 1000); // 10 dk güvenlik zaman aşımı
+    idleTimer = setTimeout(() => { onExpire && onExpire(); }, 10 * 60 * 1000);
   }
 
   function parseQuery() {
-    const hsh = String(location.hash || '');
-    const qi = hsh.indexOf('?');
     const out = {};
-    if (qi >= 0) {
-      new URLSearchParams(hsh.slice(qi + 1)).forEach((v, k) => { out[k] = v; });
-    }
+    const parseStr = s => {
+      const qi = s.indexOf('?');
+      if (qi >= 0) new URLSearchParams(s.slice(qi + 1)).forEach((v, k) => { out[k] = v; });
+    };
+    parseStr(String(location.search || ''));
+    parseStr(String(location.hash || ''));
     return out;
+  }
+
+  function safeBack() {
+    clearIdle();
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (x) { }
+    if (typeof App !== 'undefined' && typeof App.backToApp === 'function') App.backToApp();
+    else if (typeof App !== 'undefined' && App.state && App.state.user) { App.renderShell(); App.go(App.state.view || 'scan'); }
+    else if (typeof App !== 'undefined' && typeof App.renderLogin === 'function') App.renderLogin();
   }
 
   function renderResult(root, data, onBack) {
@@ -160,20 +169,28 @@ const Veli = (() => {
     let mode = 'sorgu'; // 'sorgu' | 'giris' | 'uye'
     let places = [];
     let schoolList = [];
-    const st = { il: '', ilce: '', duzey: '', ara: '', okulKodu: q.okul || q.k || '', sinif: q.sinif || q.s || '', ogrNo: q.no || q.n || '', veliKodu: '' };
+    const st = {
+      il: '', ilce: '', duzey: '', ara: '',
+      okulKodu: q.okul || q.okulKodu || q.k || '',
+      okulAdi: '',
+      sinif: q.sinif || q.s || '',
+      ogrNo: q.no || q.ogrNo || q.n || '',
+      veliKodu: q.kod || q.vk || q.veliKodu || ''
+    };
 
     const tabBar = h('div', { class: 'tabs no-print', style: { marginBottom: '.8rem' } });
     const content = h('div');
 
     wrap.append(
       h('div', { class: 'row between no-print', style: { marginBottom: '.6rem' } },
-        h('a', { href: '#', onclick: e => { e.preventDefault(); clearIdle(); try { history.replaceState(null, '', location.pathname + location.search); } catch (x) { } App.backToApp(); } }, '← Giriş sayfasına dön'),
+        h('a', { href: '#', onclick: e => { e.preventDefault(); safeBack(); } }, '← Giriş sayfasına dön'),
         h('a', { href: '#/kilavuz/veli-sorgu', onclick: e => { e.preventDefault(); location.hash = '#/kilavuz/veli-sorgu'; } }, '? Yardım')
       ),
       h('h1', { style: { margin: '0 0 .3rem' } }, 'Sıraç Aksan Optik Okuma · Veli & Öğrenci Portalı'),
       h('p', { class: 'small muted no-print', style: { marginTop: 0 } }, 'Okul numaranızla hızlıca sonuç ve eylem planı sorgulayabilir ya da Gmail/e-posta hesabınızla üye olarak tek tıkla giriş yapabilirsiniz.'),
       tabBar,
-      content
+      content,
+      typeof saCopyrightFooter === 'function' ? saCopyrightFooter() : null
     );
 
     function drawTabs() {
@@ -186,15 +203,16 @@ const Veli = (() => {
 
     async function loadPlaces() {
       if (places.length) return;
-      try { const d = await api('publicSchools', {}, { open: true }); places = d.iller || []; } catch (e) { places = []; }
+      try { const d = await api('publicSchools', {}, { open: true, noAuthRedirect: true }); places = d.iller || []; } catch (e) { places = []; }
     }
 
     function buildSchoolSelector(onClassReady) {
+      const preBanner = h('div', { class: 'hidden', style: { gridColumn: '1/-1' } });
       const ilSel = h('select', { onchange: () => { st.il = ilSel.value; st.ilce = ''; fillIlce(); } }, h('option', { value: '' }, 'İl seçin…'));
       const ilceSel = h('select', { onchange: async () => { st.ilce = ilceSel.value; await loadSchools(); } }, h('option', { value: '' }, 'İlçe seçin…'));
       const duzeySel = h('select', { onchange: () => { st.duzey = duzeySel.value; fillSchools(); } }, h('option', { value: '' }, 'Tüm düzeyler'), DUZEYLER.map(d => h('option', { value: d }, d)));
       const araIn = h('input', { type: 'search', placeholder: 'Okul ara…', oninput: () => { st.ara = araIn.value.trim().toLocaleLowerCase('tr'); fillSchools(); } });
-      const schSel = h('select', { onchange: async () => { st.okulKodu = schSel.value; await loadClasses(); } }, h('option', { value: '' }, 'Okul seçin…'));
+      const schSel = h('select', { onchange: async () => { st.okulKodu = schSel.value; st.okulAdi = ''; await loadClasses(); } }, h('option', { value: '' }, 'Okul seçin…'));
       const sinifSel = h('select', { onchange: () => { st.sinif = sinifSel.value; } }, h('option', { value: '' }, 'Sınıfı seçin…'));
 
       function fillIl() {
@@ -210,7 +228,7 @@ const Veli = (() => {
       async function loadSchools() {
         schoolList = [];
         if (!st.il || !st.ilce) { fillSchools(); return; }
-        try { const d = await api('publicSchools', { il: st.il, ilce: st.ilce }, { open: true }); schoolList = d.schools || []; } catch (e) { schoolList = []; }
+        try { const d = await api('publicSchools', { il: st.il, ilce: st.ilce }, { open: true, noAuthRedirect: true }); schoolList = d.schools || []; } catch (e) { schoolList = []; }
         fillSchools();
       }
       function fillSchools() {
@@ -222,10 +240,22 @@ const Veli = (() => {
         clear(sinifSel).append(h('option', { value: '' }, 'Sınıfı seçin…'));
         if (!st.okulKodu) return;
         try {
-          const d = await api('portalClasses', { okulKodu: st.okulKodu }, { open: true });
+          const d = await api('portalClasses', { okulKodu: st.okulKodu }, { open: true, noAuthRedirect: true });
           const cls = d.siniflar || [];
+          st.okulAdi = d.okulAdi || st.okulAdi;
+          if (st.okulAdi) {
+            clear(preBanner).append(h('div', { class: 'alert ok', style: { marginBottom: '.2rem' } }, `Seçili okul: `, h('b', null, st.okulAdi), ` (Kod: ${st.okulKodu})`));
+            preBanner.classList.remove('hidden');
+            if (!Array.from(schSel.options).some(o => o.value === String(st.okulKodu))) {
+              schSel.append(h('option', { value: String(st.okulKodu) }, st.okulAdi));
+              schSel.value = String(st.okulKodu);
+            }
+          }
           clear(sinifSel).append(h('option', { value: '' }, cls.length ? 'Sınıfı seçin…' : 'Sınıf kaydı yok'), cls.map(c => h('option', { value: c }, c)));
-          if (st.sinif && cls.includes(st.sinif)) sinifSel.value = st.sinif;
+          if (st.sinif) {
+            const match = cls.find(c => String(c).toLocaleLowerCase('tr') === String(st.sinif).toLocaleLowerCase('tr'));
+            if (match) { st.sinif = match; sinifSel.value = match; }
+          }
           onClassReady && onClassReady(d);
         } catch (e) { toast(e.message, 'bad'); }
       }
@@ -234,6 +264,7 @@ const Veli = (() => {
 
       return {
         el: h('div', { class: 'grid' },
+          preBanner,
           h('div', { class: 'field' }, h('label', null, 'İl'), ilSel),
           h('div', { class: 'field' }, h('label', null, 'İlçe'), ilceSel),
           h('div', { class: 'field' }, h('label', null, 'Okul düzeyi'), duzeySel),
@@ -259,7 +290,7 @@ const Veli = (() => {
             if (!emIn.value.trim() || !pwIn.value) { errBox.append(h('div', { class: 'alert bad' }, 'E-posta ve parola gerekli.')); return; }
             btn.disabled = true;
             try {
-              const d = await api('veliLogin', { email: emIn.value.trim(), password: pwIn.value }, { open: true });
+              const d = await api('veliLogin', { email: emIn.value.trim(), password: pwIn.value }, { open: true, noAuthRedirect: true });
               renderResult(content, d, () => { drawTabs(); drawPane(); });
             } catch (e) {
               errBox.append(h('div', { class: 'alert bad' }, e.message));
@@ -302,7 +333,7 @@ const Veli = (() => {
               await api('veliRegister', {
                 okulKodu: st.okulKodu, sinif: st.sinif, ogrNo: noIn.value.trim(), veliKodu: vkIn.value.trim(),
                 ad: adIn.value.trim(), email: emIn.value.trim(), telefon: telIn.value.trim(), password: pwIn.value
-              }, { open: true });
+              }, { open: true, noAuthRedirect: true });
               toast('Veli üyeliğiniz oluşturuldu! Şimdi giriş yapabilirsiniz.', 'ok');
               mode = 'giris';
               drawTabs();
@@ -337,9 +368,9 @@ const Veli = (() => {
       // Hızlı Sorgu (girişsiz)
       const schUI = buildSchoolSelector();
       const noIn = h('input', { type: 'text', inputmode: 'numeric', placeholder: 'Örn: 125', value: st.ogrNo, oninput: e => { st.ogrNo = e.target.value; } });
-      const vkWrap = h('div', { class: 'field hidden' });
-      const vkIn = h('input', { type: 'text', placeholder: 'Okulun verdiği veli kodu', value: st.veliKodu, oninput: e => { st.veliKodu = e.target.value; } });
-      vkWrap.append(h('label', null, 'Veli Kodu'), vkIn);
+      const vkWrap = h('div', { class: 'field' });
+      const vkIn = h('input', { type: 'text', placeholder: 'Okulun verdiği veli kodu (varsa)', value: st.veliKodu, oninput: e => { st.veliKodu = e.target.value; } });
+      vkWrap.append(h('label', null, 'Veli Kodu (varsa)'), vkIn);
 
       const btn = h('button', {
         class: 'btn primary',
@@ -348,10 +379,9 @@ const Veli = (() => {
           if (!st.okulKodu || !st.sinif || !noIn.value.trim()) { errBox.append(h('div', { class: 'alert bad' }, 'Lütfen okul, sınıf ve okul numarasını seçin/yazın.')); return; }
           btn.disabled = true;
           try {
-            const d = await api('portalLookup', { okulKodu: st.okulKodu, sinif: st.sinif, ogrNo: noIn.value.trim(), veliKodu: vkIn.value.trim() }, { open: true });
+            const d = await api('portalLookup', { okulKodu: st.okulKodu, sinif: st.sinif, ogrNo: noIn.value.trim(), veliKodu: vkIn.value.trim() }, { open: true, noAuthRedirect: true });
             renderResult(content, d, () => { drawTabs(); drawPane(); });
           } catch (e) {
-            if (e.code === 'VELIKODU') vkWrap.classList.remove('hidden');
             errBox.append(h('div', { class: 'alert bad' }, e.message));
             btn.disabled = false;
           }
@@ -379,4 +409,19 @@ const Veli = (() => {
   return { renderPublic };
 })();
 
+// Tüm olası yönlendirme adlarıyla uyumlu dışa aktarım
+App.renderPortal = () => Veli.renderPublic();
 App.renderVeli = () => Veli.renderPublic();
+window.Portal = { render: () => Veli.renderPublic(), open: () => Veli.renderPublic() };
+
+// WhatsApp bağlantıları (#/ogrenci?okul=...&sinif=...&no=...) ve ana sayfa tıklamaları için doğrudan yönlendirici
+(function () {
+  const checkVeliHash = () => {
+    if (String(location.hash || '').startsWith('#/ogrenci')) {
+      Veli.renderPublic();
+    }
+  };
+  window.addEventListener('hashchange', checkVeliHash);
+  window.addEventListener('DOMContentLoaded', () => { setTimeout(checkVeliHash, 30); });
+  if (document.readyState !== 'loading') setTimeout(checkVeliHash, 30);
+})();
