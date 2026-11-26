@@ -6,6 +6,7 @@
 'use strict';
 
 /* ================================================================ ORTAK YARDIMCILAR (og*) */
+const OG_MET = [['pct', 'Başarı %'], ['net', 'Net'], ['puan', 'Puan']];
 const ogSorted = sel => (sel || []).slice().sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || String(a.name || '').localeCompare(String(b.name || ''), 'tr'));
 const ogMean = arr => { const v = (arr || []).filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + Number(b), 0) / v.length : null; };
 const ogPct = (net, totalQ) => (net != null && isFinite(net) && totalQ > 0) ? Math.max(0, Math.min(100, (Number(net) / Number(totalQ)) * 100)) : null;
@@ -52,6 +53,25 @@ function ogDownload(filename, sheets) {
   } else {
     toast('Excel kütüphanesi (xlsx-lite.js) bulunamadı.', 'bad');
   }
+}
+
+/** Seçili sınavlardaki tüm benzersiz dersleri (anNk(ad) → { nk, name, slot, count }) haritası olarak döndürür. */
+function ogLessonMap(exams) {
+  const m = new Map();
+  let slot = 1;
+  (exams || []).forEach(n => {
+    (n.lessons || []).forEach(l => {
+      const nk = anNk(l && l.name);
+      if (!nk) return;
+      if (!m.has(nk)) {
+        m.set(nk, { nk, name: l.name, slot: ((slot - 1) % 8) + 1, count: l.count || 0 });
+        slot++;
+      } else if (l.count && !m.get(nk).count) {
+        m.get(nk).count = l.count;
+      }
+    });
+  });
+  return m;
 }
 
 /** Okul öğrenci listesi + seçili sınavlardaki tüm öğrencileri tek haritada toplar (key = normNo). */
