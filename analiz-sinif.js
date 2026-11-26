@@ -92,9 +92,10 @@ function snStudents(exams, roster) {
   const out = [];
   roster.forEach((info, no) => {
     const pct = [], nets = [], puans = [];
-    const lmap = new Map();
+    const lmap = new Map(), lnetMap = new Map(), lpct = new Map(), lnets = new Map();
+    lm.forEach(x => { lpct.set(x.nk, exams.map(() => null)); lnets.set(x.nk, exams.map(() => null)); });
     let took = 0;
-    exams.forEach(n => {
+    exams.forEach((n, ei) => {
       const r = (anRows(n) || []).find(x => normNo(x.no || x.ogrNo) === normNo(no));
       if (!r) { pct.push(null); nets.push(null); puans.push(null); return; }
       took++;
@@ -111,12 +112,24 @@ function snStudents(exams, roster) {
         if (lp != null) {
           if (!lmap.has(nk)) lmap.set(nk, []);
           lmap.get(nk).push(lp);
+          if (lpct.has(nk)) lpct.get(nk)[ei] = lp;
+        }
+        if (isFinite(net)) {
+          if (!lnetMap.has(nk)) lnetMap.set(nk, []);
+          lnetMap.get(nk).push(net);
+          if (lnets.has(nk)) lnets.get(nk)[ei] = net;
         }
       });
     });
     const fi = snFirstIdx(pct), li = snLastIdx(pct), pi = li >= 0 ? snPrevIdx(pct, li) : -1;
-    const lavg = new Map();
-    lm.forEach(x => { lavg.set(x.nk, lmap.has(x.nk) ? ogMean(lmap.get(x.nk)) : null); });
+    const lavg = new Map(), lnet = new Map(), les = new Map();
+    lm.forEach(x => {
+      const aPct = lmap.has(x.nk) ? ogMean(lmap.get(x.nk)) : null;
+      const aNet = lnetMap.has(x.nk) ? ogMean(lnetMap.get(x.nk)) : null;
+      lavg.set(x.nk, aPct);
+      lnet.set(x.nk, aNet);
+      les.set(x.nk, { avg: aPct, net: aNet, pct: lpct.get(x.nk), nets: lnets.get(x.nk) });
+    });
     out.push({
       no,
       ad: info.ad || '',
@@ -132,15 +145,24 @@ function snStudents(exams, roster) {
       last: li >= 0 ? pct[li] : null,
       gain: fi >= 0 && li > fi ? pct[li] - pct[fi] : null,
       dLast: li >= 0 && pi >= 0 ? pct[li] - pct[pi] : null,
+      max: pct.some(v => v != null) ? Math.max(...pct.filter(v => v != null)) : null,
+      slope: ogSlope(pct),
+      lp: lpct,
       lavg,
+      lnet,
+      lpct,
+      lnets,
+      lper: lpct,
+      lval: lavg,
+      les,
       rank: null
     });
   });
   return out;
 }
 
-function snRank(list, key) {
-  const k = key || 'avg';
+function snRank(list, key, outKey) {
+  const k = key || 'avg', ok = outKey || 'rank';
   const sorted = list.slice().sort((a, b) => {
     const va = a[k] == null ? -Infinity : a[k];
     const vb = b[k] == null ? -Infinity : b[k];
@@ -148,9 +170,9 @@ function snRank(list, key) {
   });
   let r = 0;
   sorted.forEach((item, i) => {
-    if (item[k] == null) { item.rank = null; return; }
+    if (item[k] == null) { item[ok] = null; return; }
     if (i === 0 || item[k] !== sorted[i - 1][k]) r = i + 1;
-    item.rank = r;
+    item[ok] = r;
   });
   return sorted;
 }

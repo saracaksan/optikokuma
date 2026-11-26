@@ -11,7 +11,14 @@ const OG_MET = {
   net: { l: 'Net', f: v => (v == null || !isFinite(v)) ? '–' : nf(v, 2), u: ' net', d: 2 },
   puan: { l: 'Puan', f: v => (v == null || !isFinite(v)) ? '–' : nf(v, 1), u: ' puan', d: 1 }
 };
-const ogKey = s => anNk(s);
+function ogKey(r, li) {
+  if (!r || typeof r !== 'object') return anNk(r);
+  if (li != null && li >= 0) {
+    const s = r.sec && r.sec[li];
+    return s && s[3] != null ? Number(s[3]) : null;
+  }
+  return r.puan != null ? Number(r.puan) : (r.net != null ? Number(r.net) : null);
+}
 const ogSorted = sel => (sel || []).slice().sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || String(a.name || '').localeCompare(String(b.name || ''), 'tr'));
 const ogMean = arr => { const v = (arr || []).filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + Number(b), 0) / v.length : null; };
 const ogPct = (net, totalQ) => (net != null && isFinite(net) && totalQ > 0) ? Math.max(0, Math.min(100, (Number(net) / Number(totalQ)) * 100)) : null;
